@@ -2,7 +2,14 @@ const ytdl = require('ytdl-core');
 var Stream = require('stream');
 
 async function download(url, options) {
-    const filename = options.filename || (await ytdl.getInfo(url))?.videoDetails?.title || "download." + options.audioOnly ? "mp3" : "mp4";
+    const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
+    let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
+    if (options.filename !== null && options.filename !== '') {
+        filename = options.filename
+    } else if (videoTitle !== null && videoTitle !== '') {
+        filename = options.filename;
+    }
+    console.log("UserSpecifiedFilename", options.filename, "VideoTitle:", videoTitle, "FinalFilename:", filename)
 
     let result = new Uint8Array();
     let fileStream = new Stream();
