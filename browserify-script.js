@@ -11,6 +11,7 @@ async function download(url, options) {
     }
     console.log("UserSpecifiedFilename", options.filename, "VideoTitle:", videoTitle, "FinalFilename:", filename)
     if (options.audioOnly) {
+        console.log("Filtering with audioonly");
         options.filter = (format) => format.hasVideo === false && format.hasAudio === true
     }
 

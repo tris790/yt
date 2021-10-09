@@ -1,3 +1,11 @@
+const { fetch: origFetch } = window;
+const PROXY_URL = "https://proxy.tris790.workers.dev/"
+window.fetch = async (...args) => {
+    let newArgs = [...args];
+    newArgs[0] = PROXY_URL + newArgs[0];
+    return await origFetch(...args);
+};
+
 function downloadByteArray(bytes, outputFilename) {
     var a = window.document.createElement('a');
     a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
