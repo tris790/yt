@@ -7,7 +7,7 @@ global.fetch = async (...args) => {
     let newArgs = [...args];
     newArgs[0] = PROXY_URL + newArgs[0];
     console.log("Proxying:", newArgs[0]);
-    return await origFetch(...args);
+    return await origFetch(...newArgs);
 };
 
 async function download(url, options) {
