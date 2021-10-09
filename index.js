@@ -6,6 +6,7 @@ fileStream.writable = true;
 let result = new Uint8Array();
 
 function download(bytes) {
+    console.log("Downloading mp4");
     var a = window.document.createElement('a');
     a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
     a.download = "video.mp4";
