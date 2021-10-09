@@ -8,6 +8,6 @@ function downloadByteArray(bytes, outputFilename) {
 }
 
 function onGetClicked() {
-    const url = document.getElementById("url");
+    const url = document.getElementById("url").value;
     browserify.download(url);
 }
