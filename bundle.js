@@ -3,43 +3,22 @@
     const ytdl = require('ytdl-core');
     var Stream = require('stream');
 
-    var fileStream = new Stream();
-    fileStream.writable = true;
-    let result = new Uint8Array();
+    function download(url, options) {
+      let result = new Uint8Array();
+      let fileStream = new Stream();
+      fileStream.writable = true;
+      fileStream.write = function (data) {
+        result = new Uint8Array([...result, ...data]);
+      };
 
-    function download(bytes) {
-      var a = window.document.createElement('a');
+      fileStream.end = function (data) {
+        console.log("End inner", data, result)
+        downloadByteArray(result);
+      }
 
-      a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-      a.download = "video.mp4";
-
-      // Append anchor to body.
-      document.body.appendChild(a)
-      a.click();
-
-
-      // Remove anchor from body
-      document.body.removeChild(a)
+      ytdl(url, options)
+        .pipe(fileStream);
     }
-
-    fileStream.write = function (data) {
-      // debugger;
-      result = new Uint8Array([...result, ...data]);
-    };
-
-    fileStream.end = function (data) {
-      console.log("End inner", data, result)
-      download(result);
-    }
-
-    fileStream.on("close", () => console.log("Close", result))
-    fileStream.on("end", () => console.log("End", result))
-    fileStream.on("finish", () => console.log("Finish", result))
-
-    ytdl('https://crimson-pine-1332.tris790.workers.dev/https://www.youtube.com/watch?v=0QZdEdkTHW8')
-      .pipe(fileStream);
-
-
   }, { "stream": 23, "ytdl-core": 66 }], 2: [function (require, module, exports) {
     'use strict'
 
@@ -13542,7 +13521,7 @@
         const paths = parsed.pathname.split('/');
         id = parsed.host === 'youtu.be' ? paths[1] : paths[2];
       } else if (parsed.hostname && !validQueryDomains.has(parsed.hostname)) {
-        //throw Error('Not a YouTube domain');
+        throw Error('Not a YouTube domain');
       }
       if (!id) {
         throw Error(`No video id found: ${link}`);
