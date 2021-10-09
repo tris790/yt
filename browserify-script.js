@@ -6,6 +6,7 @@ const PROXY_URL = "https://proxy.tris790.workers.dev/"
 global.fetch = async (...args) => {
     let newArgs = [...args];
     newArgs[0] = PROXY_URL + newArgs[0];
+    console.log("Proxying:", newArgs[0]);
     return await origFetch(...args);
 };
 
