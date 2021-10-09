@@ -1,6 +1,14 @@
 const ytdl = require('ytdl-core');
 var Stream = require('stream');
 
+const { fetch: origFetch } = global;
+const PROXY_URL = "https://proxy.tris790.workers.dev/"
+global.fetch = async (...args) => {
+    let newArgs = [...args];
+    newArgs[0] = PROXY_URL + newArgs[0];
+    return await origFetch(...args);
+};
+
 async function download(url, options) {
     const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
     let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
