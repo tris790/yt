@@ -1,33 +1,39 @@
 const ytdl = require('ytdl-core');
 var Stream = require('stream');
 
-var fileStream = new Stream();
-fileStream.writable = true;
-let result = new Uint8Array();
-
-function download(bytes) {
-    console.log("Downloading mp4");
+function downloadByteArray(bytes, outputFilename) {
     var a = window.document.createElement('a');
     a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-    a.download = "video.mp4";
+    a.download = outputFilename;
     document.body.appendChild(a)
     a.click();
     document.body.removeChild(a)
 }
 
-fileStream.write = function (data) {
-    result = new Uint8Array([...result, ...data]);
-};
+function download(url, options) {
+    let result = new Uint8Array();
+    let fileStream = new Stream();
+    fileStream.writable = true;
+    fileStream.write = function (data) {
+        result = new Uint8Array([...result, ...data]);
+    };
 
-fileStream.end = function (data) {
-    console.log("End inner", data, result)
-    download(result);
+    fileStream.end = function (data) {
+        console.log("End inner", data, result)
+        downloadByteArray(result);
+    }
+
+    ytdl(url, options)
+        .pipe(fileStream);
 }
 
-fileStream.on("close", () => console.log("Close", result))
-fileStream.on("end", () => console.log("End", result))
-fileStream.on("finish", () => console.log("Finish", result))
+function onGetClicked() {
+    const url = document.getElementById("url");
+    download(url);
+}
 
-ytdl('https://www.youtube.com/watch?v=0QZdEdkTHW8')
-    .pipe(fileStream);
+
+
+
+
 
