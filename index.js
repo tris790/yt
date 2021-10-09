@@ -9,5 +9,9 @@ function downloadByteArray(bytes, outputFilename) {
 
 function onGetClicked() {
     const url = document.getElementById("url").value;
-    browserify.download(url);
+    const isAudioOnly = document.getElementById("audioOnly").checked;
+    const filename = document.getElementById("filename").value;
+    const quality = document.getElementById("quality").value;
+
+    browserify.download(url, { isAudioOnly, filename, quality });
 }

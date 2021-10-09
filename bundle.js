@@ -4,7 +4,10 @@
       const ytdl = require('ytdl-core');
       var Stream = require('stream');
 
-      function download(url, options) {
+      async function download(url, options) {
+        videoInfo.videoDetails
+        const filename = options.filename || (await ytdl.getInfo(url))?.videoDetails?.title || "download." + options.audioOnly ? "mp3" : "mp4";
+
         let result = new Uint8Array();
         let fileStream = new Stream();
         fileStream.writable = true;
@@ -13,8 +16,7 @@
         };
 
         fileStream.end = function (data) {
-          console.log("End inner", data, result)
-          downloadByteArray(result);
+          downloadByteArray(result, filename);
         }
 
         ytdl(url, options)
