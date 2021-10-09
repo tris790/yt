@@ -13,6 +13,9 @@
           filename = options.filename;
         }
         console.log("UserSpecifiedFilename", options.filename, "VideoTitle:", videoTitle, "FinalFilename:", filename)
+        if (options.audioOnly) {
+          options.filter = (format) => format.hasVideo === false && format.hasAudio === true
+        }
 
         let result = new Uint8Array();
         let fileStream = new Stream();
