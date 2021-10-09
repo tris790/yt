@@ -17,3 +17,4 @@ function download(url, options) {
     ytdl(url, options)
         .pipe(fileStream);
 }
+module.exports.download = download;

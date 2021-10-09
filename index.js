@@ -9,5 +9,5 @@ function downloadByteArray(bytes, outputFilename) {
 
 function onGetClicked() {
     const url = document.getElementById("url");
-    download(url);
+    browserify.download(url);
 }
