@@ -1,6 +1,6 @@
-const { fetch: origFetch } = window;
+const { fetch: origFetch } = browserify;
 const PROXY_URL = "https://proxy.tris790.workers.dev/"
-window.fetch = async (...args) => {
+browserify.fetch = async (...args) => {
     let newArgs = [...args];
     newArgs[0] = PROXY_URL + newArgs[0];
     return await origFetch(...args);
