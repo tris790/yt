@@ -28,6 +28,7 @@ async function download(url, options) {
 
     let result = [];
     fileStream = streamSaver.createWriteStream(filename);
+    fileStream.on = (a, b) => console.log("on hook", a, b)
     // fileStream.
     //     fileStream.writable = true;
     // fileStream.write = function (data) {
