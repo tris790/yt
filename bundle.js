@@ -2,6 +2,7 @@
 (function (global){(function (){
 const ytdl = require('ytdl-core');
 var Stream = require('stream');
+const streamSaver = require('streamsaver')
 
 const { fetch: origFetch } = global;
 const PROXY_URL = "https://proxy.tris790.workers.dev/"
@@ -11,7 +12,7 @@ global.fetch = async (...args) => {
     console.log("Proxying:", newArgs[0]);
     return await origFetch(...newArgs);
 };
-
+let fileStream;
 async function download(url, options) {
     const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
     let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
@@ -26,23 +27,32 @@ async function download(url, options) {
         options.filter = (format) => format.hasVideo === false && format.hasAudio === true
     }
 
-    let result = new Uint8Array();
-    let fileStream = new Stream();
-    fileStream.writable = true;
-    fileStream.write = function (data) {
-        result = new Uint8Array([...result, ...data]);
-    };
+    let result = [];
+    fileStream = streamSaver.createWriteStream(filename);
+    // fileStream.
+    //     fileStream.writable = true;
+    // fileStream.write = function (data) {
+    //     result = new Uint8Array([...result, ...data]);
+    // };
 
-    fileStream.end = function (data) {
-        downloadByteArray(result, filename);
-    }
+    // fileStream.end = function (data) {
+    //     downloadByteArray(result, filename);
+    // }
 
     ytdl(url, options)
         .pipe(fileStream);
 }
+
+function abortDownload() {
+    if (fileStream) {
+        fileStream.abort();
+    }
+}
+
 module.exports.download = download;
+module.exports.abortDownload = abortDownload;
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"stream":23,"ytdl-core":66}],2:[function(require,module,exports){
+},{"stream":23,"streamsaver":57,"ytdl-core":67}],2:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -2575,7 +2585,7 @@ function validateParams (params) {
   return params
 }
 
-},{"http":38,"url":59}],8:[function(require,module,exports){
+},{"http":38,"url":60}],8:[function(require,module,exports){
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
@@ -6115,7 +6125,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 })(typeof exports === 'undefined' ? this.sax = {} : exports)
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"buffer":4,"stream":23,"string_decoder":57}],23:[function(require,module,exports){
+},{"buffer":4,"stream":23,"string_decoder":58}],23:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -7684,7 +7694,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":24,"./_stream_duplex":25,"./internal/streams/async_iterator":30,"./internal/streams/buffer_list":31,"./internal/streams/destroy":32,"./internal/streams/from":34,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"events":6,"inherits":9,"string_decoder/":57,"util":3}],28:[function(require,module,exports){
+},{"../errors":24,"./_stream_duplex":25,"./internal/streams/async_iterator":30,"./internal/streams/buffer_list":31,"./internal/streams/destroy":32,"./internal/streams/from":34,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"events":6,"inherits":9,"string_decoder/":58,"util":3}],28:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -8586,7 +8596,7 @@ Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":24,"./_stream_duplex":25,"./internal/streams/destroy":32,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"inherits":9,"util-deprecate":61}],30:[function(require,module,exports){
+},{"../errors":24,"./_stream_duplex":25,"./internal/streams/destroy":32,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"inherits":9,"util-deprecate":62}],30:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
@@ -9442,7 +9452,7 @@ http.METHODS = [
 	'UNSUBSCRIBE'
 ]
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./lib/request":40,"./lib/response":41,"builtin-status-codes":5,"url":59,"xtend":62}],39:[function(require,module,exports){
+},{"./lib/request":40,"./lib/response":41,"builtin-status-codes":5,"url":60,"xtend":63}],39:[function(require,module,exports){
 (function (global){(function (){
 exports.fetch = isFunction(global.fetch) && isFunction(global.ReadableStream)
 
@@ -10084,11 +10094,11 @@ arguments[4][25][0].apply(exports,arguments)
 arguments[4][26][0].apply(exports,arguments)
 },{"./_stream_transform":46,"dup":26,"inherits":9}],45:[function(require,module,exports){
 arguments[4][27][0].apply(exports,arguments)
-},{"../errors":42,"./_stream_duplex":43,"./internal/streams/async_iterator":48,"./internal/streams/buffer_list":49,"./internal/streams/destroy":50,"./internal/streams/from":52,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":27,"events":6,"inherits":9,"string_decoder/":57,"util":3}],46:[function(require,module,exports){
+},{"../errors":42,"./_stream_duplex":43,"./internal/streams/async_iterator":48,"./internal/streams/buffer_list":49,"./internal/streams/destroy":50,"./internal/streams/from":52,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":27,"events":6,"inherits":9,"string_decoder/":58,"util":3}],46:[function(require,module,exports){
 arguments[4][28][0].apply(exports,arguments)
 },{"../errors":42,"./_stream_duplex":43,"dup":28,"inherits":9}],47:[function(require,module,exports){
 arguments[4][29][0].apply(exports,arguments)
-},{"../errors":42,"./_stream_duplex":43,"./internal/streams/destroy":50,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":29,"inherits":9,"util-deprecate":61}],48:[function(require,module,exports){
+},{"../errors":42,"./_stream_duplex":43,"./internal/streams/destroy":50,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":29,"inherits":9,"util-deprecate":62}],48:[function(require,module,exports){
 arguments[4][30][0].apply(exports,arguments)
 },{"./end-of-stream":51,"_process":16,"dup":30}],49:[function(require,module,exports){
 arguments[4][31][0].apply(exports,arguments)
@@ -10116,6 +10126,316 @@ exports.finished = require('./lib/internal/streams/end-of-stream.js');
 exports.pipeline = require('./lib/internal/streams/pipeline.js');
 
 },{"./lib/_stream_duplex.js":43,"./lib/_stream_passthrough.js":44,"./lib/_stream_readable.js":45,"./lib/_stream_transform.js":46,"./lib/_stream_writable.js":47,"./lib/internal/streams/end-of-stream.js":51,"./lib/internal/streams/pipeline.js":53}],57:[function(require,module,exports){
+/* global chrome location ReadableStream define MessageChannel TransformStream */
+
+;((name, definition) => {
+  typeof module !== 'undefined'
+    ? module.exports = definition()
+    : typeof define === 'function' && typeof define.amd === 'object'
+      ? define(definition)
+      : this[name] = definition()
+})('streamSaver', () => {
+  'use strict'
+
+  const global = typeof window === 'object' ? window : this
+  if (!global.HTMLElement) console.warn('streamsaver is meant to run on browsers main thread')
+
+  let mitmTransporter = null
+  let supportsTransferable = false
+  const test = fn => { try { fn() } catch (e) {} }
+  const ponyfill = global.WebStreamsPolyfill || {}
+  const isSecureContext = global.isSecureContext
+  // TODO: Must come up with a real detection test (#69)
+  let useBlobFallback = /constructor/i.test(global.HTMLElement) || !!global.safari || !!global.WebKitPoint
+  const downloadStrategy = isSecureContext || 'MozAppearance' in document.documentElement.style
+    ? 'iframe'
+    : 'navigate'
+
+  const streamSaver = {
+    createWriteStream,
+    WritableStream: global.WritableStream || ponyfill.WritableStream,
+    supported: true,
+    version: { full: '2.0.5', major: 2, minor: 0, dot: 5 },
+    mitm: 'https://jimmywarting.github.io/StreamSaver.js/mitm.html?version=2.0.0'
+  }
+
+  /**
+   * create a hidden iframe and append it to the DOM (body)
+   *
+   * @param  {string} src page to load
+   * @return {HTMLIFrameElement} page to load
+   */
+  function makeIframe (src) {
+    if (!src) throw new Error('meh')
+    const iframe = document.createElement('iframe')
+    iframe.hidden = true
+    iframe.src = src
+    iframe.loaded = false
+    iframe.name = 'iframe'
+    iframe.isIframe = true
+    iframe.postMessage = (...args) => iframe.contentWindow.postMessage(...args)
+    iframe.addEventListener('load', () => {
+      iframe.loaded = true
+    }, { once: true })
+    document.body.appendChild(iframe)
+    return iframe
+  }
+
+  /**
+   * create a popup that simulates the basic things
+   * of what a iframe can do
+   *
+   * @param  {string} src page to load
+   * @return {object}     iframe like object
+   */
+  function makePopup (src) {
+    const options = 'width=200,height=100'
+    const delegate = document.createDocumentFragment()
+    const popup = {
+      frame: global.open(src, 'popup', options),
+      loaded: false,
+      isIframe: false,
+      isPopup: true,
+      remove () { popup.frame.close() },
+      addEventListener (...args) { delegate.addEventListener(...args) },
+      dispatchEvent (...args) { delegate.dispatchEvent(...args) },
+      removeEventListener (...args) { delegate.removeEventListener(...args) },
+      postMessage (...args) { popup.frame.postMessage(...args) }
+    }
+
+    const onReady = evt => {
+      if (evt.source === popup.frame) {
+        popup.loaded = true
+        global.removeEventListener('message', onReady)
+        popup.dispatchEvent(new Event('load'))
+      }
+    }
+
+    global.addEventListener('message', onReady)
+
+    return popup
+  }
+
+  try {
+    // We can't look for service worker since it may still work on http
+    new Response(new ReadableStream())
+    if (isSecureContext && !('serviceWorker' in navigator)) {
+      useBlobFallback = true
+    }
+  } catch (err) {
+    useBlobFallback = true
+  }
+
+  test(() => {
+    // Transfariable stream was first enabled in chrome v73 behind a flag
+    const { readable } = new TransformStream()
+    const mc = new MessageChannel()
+    mc.port1.postMessage(readable, [readable])
+    mc.port1.close()
+    mc.port2.close()
+    supportsTransferable = true
+    // Freeze TransformStream object (can only work with native)
+    Object.defineProperty(streamSaver, 'TransformStream', {
+      configurable: false,
+      writable: false,
+      value: TransformStream
+    })
+  })
+
+  function loadTransporter () {
+    if (!mitmTransporter) {
+      mitmTransporter = isSecureContext
+        ? makeIframe(streamSaver.mitm)
+        : makePopup(streamSaver.mitm)
+    }
+  }
+
+  /**
+   * @param  {string} filename filename that should be used
+   * @param  {object} options  [description]
+   * @param  {number} size     depricated
+   * @return {WritableStream<Uint8Array>}
+   */
+  function createWriteStream (filename, options, size) {
+    let opts = {
+      size: null,
+      pathname: null,
+      writableStrategy: undefined,
+      readableStrategy: undefined
+    }
+
+    let bytesWritten = 0 // by StreamSaver.js (not the service worker)
+    let downloadUrl = null
+    let channel = null
+    let ts = null
+
+    // normalize arguments
+    if (Number.isFinite(options)) {
+      [ size, options ] = [ options, size ]
+      console.warn('[StreamSaver] Depricated pass an object as 2nd argument when creating a write stream')
+      opts.size = size
+      opts.writableStrategy = options
+    } else if (options && options.highWaterMark) {
+      console.warn('[StreamSaver] Depricated pass an object as 2nd argument when creating a write stream')
+      opts.size = size
+      opts.writableStrategy = options
+    } else {
+      opts = options || {}
+    }
+    if (!useBlobFallback) {
+      loadTransporter()
+
+      channel = new MessageChannel()
+
+      // Make filename RFC5987 compatible
+      filename = encodeURIComponent(filename.replace(/\//g, ':'))
+        .replace(/['()]/g, escape)
+        .replace(/\*/g, '%2A')
+
+      const response = {
+        transferringReadable: supportsTransferable,
+        pathname: opts.pathname || Math.random().toString().slice(-6) + '/' + filename,
+        headers: {
+          'Content-Type': 'application/octet-stream; charset=utf-8',
+          'Content-Disposition': "attachment; filename*=UTF-8''" + filename
+        }
+      }
+
+      if (opts.size) {
+        response.headers['Content-Length'] = opts.size
+      }
+
+      const args = [ response, '*', [ channel.port2 ] ]
+
+      if (supportsTransferable) {
+        const transformer = downloadStrategy === 'iframe' ? undefined : {
+          // This transformer & flush method is only used by insecure context.
+          transform (chunk, controller) {
+            if (!(chunk instanceof Uint8Array)) {
+              throw new TypeError('Can only wirte Uint8Arrays')
+            }
+            bytesWritten += chunk.length
+            controller.enqueue(chunk)
+
+            if (downloadUrl) {
+              location.href = downloadUrl
+              downloadUrl = null
+            }
+          },
+          flush () {
+            if (downloadUrl) {
+              location.href = downloadUrl
+            }
+          }
+        }
+        ts = new streamSaver.TransformStream(
+          transformer,
+          opts.writableStrategy,
+          opts.readableStrategy
+        )
+        const readableStream = ts.readable
+
+        channel.port1.postMessage({ readableStream }, [ readableStream ])
+      }
+
+      channel.port1.onmessage = evt => {
+        // Service worker sent us a link that we should open.
+        if (evt.data.download) {
+          // Special treatment for popup...
+          if (downloadStrategy === 'navigate') {
+            mitmTransporter.remove()
+            mitmTransporter = null
+            if (bytesWritten) {
+              location.href = evt.data.download
+            } else {
+              downloadUrl = evt.data.download
+            }
+          } else {
+            if (mitmTransporter.isPopup) {
+              mitmTransporter.remove()
+              mitmTransporter = null
+              // Special case for firefox, they can keep sw alive with fetch
+              if (downloadStrategy === 'iframe') {
+                makeIframe(streamSaver.mitm)
+              }
+            }
+
+            // We never remove this iframes b/c it can interrupt saving
+            makeIframe(evt.data.download)
+          }
+        }
+      }
+
+      if (mitmTransporter.loaded) {
+        mitmTransporter.postMessage(...args)
+      } else {
+        mitmTransporter.addEventListener('load', () => {
+          mitmTransporter.postMessage(...args)
+        }, { once: true })
+      }
+    }
+
+    let chunks = []
+
+    return (!useBlobFallback && ts && ts.writable) || new streamSaver.WritableStream({
+      write (chunk) {
+        if (!(chunk instanceof Uint8Array)) {
+          throw new TypeError('Can only wirte Uint8Arrays')
+        }
+        if (useBlobFallback) {
+          // Safari... The new IE6
+          // https://github.com/jimmywarting/StreamSaver.js/issues/69
+          //
+          // even doe it has everything it fails to download anything
+          // that comes from the service worker..!
+          chunks.push(chunk)
+          return
+        }
+
+        // is called when a new chunk of data is ready to be written
+        // to the underlying sink. It can return a promise to signal
+        // success or failure of the write operation. The stream
+        // implementation guarantees that this method will be called
+        // only after previous writes have succeeded, and never after
+        // close or abort is called.
+
+        // TODO: Kind of important that service worker respond back when
+        // it has been written. Otherwise we can't handle backpressure
+        // EDIT: Transfarable streams solvs this...
+        channel.port1.postMessage(chunk)
+        bytesWritten += chunk.length
+
+        if (downloadUrl) {
+          location.href = downloadUrl
+          downloadUrl = null
+        }
+      },
+      close () {
+        if (useBlobFallback) {
+          const blob = new Blob(chunks, { type: 'application/octet-stream; charset=utf-8' })
+          const link = document.createElement('a')
+          link.href = URL.createObjectURL(blob)
+          link.download = filename
+          link.click()
+        } else {
+          channel.port1.postMessage('end')
+        }
+      },
+      abort () {
+        chunks = []
+        channel.port1.postMessage('abort')
+        channel.port1.onmessage = null
+        channel.port1.close()
+        channel.port2.close()
+        channel = null
+      }
+    }, opts.writableStrategy)
+  }
+
+  return streamSaver
+})
+
+},{}],58:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10412,7 +10732,7 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":21}],58:[function(require,module,exports){
+},{"safe-buffer":21}],59:[function(require,module,exports){
 (function (setImmediate,clearImmediate){(function (){
 var nextTick = require('process/browser.js').nextTick;
 var apply = Function.prototype.apply;
@@ -10491,7 +10811,7 @@ exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate :
   delete immediateIds[id];
 };
 }).call(this)}).call(this,require("timers").setImmediate,require("timers").clearImmediate)
-},{"process/browser.js":16,"timers":58}],59:[function(require,module,exports){
+},{"process/browser.js":16,"timers":59}],60:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -11225,7 +11545,7 @@ Url.prototype.parseHost = function() {
   if (host) this.hostname = host;
 };
 
-},{"./util":60,"punycode":17,"querystring":20}],60:[function(require,module,exports){
+},{"./util":61,"punycode":17,"querystring":20}],61:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -11243,7 +11563,7 @@ module.exports = {
   }
 };
 
-},{}],61:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 (function (global){(function (){
 
 /**
@@ -11314,7 +11634,7 @@ function config (name) {
 }
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],62:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -11335,7 +11655,7 @@ function extend() {
     return target
 }
 
-},{}],63:[function(require,module,exports){
+},{}],64:[function(require,module,exports){
 const { setTimeout } = require('timers');
 
 // A cache that expires.
@@ -11391,7 +11711,7 @@ module.exports = class Cache extends Map {
   }
 };
 
-},{"timers":58}],64:[function(require,module,exports){
+},{"timers":59}],65:[function(require,module,exports){
 const utils = require('./utils');
 const FORMATS = require('./formats');
 
@@ -11643,7 +11963,7 @@ exports.addFormatMeta = format => {
   return format;
 };
 
-},{"./formats":65,"./utils":71}],65:[function(require,module,exports){
+},{"./formats":66,"./utils":72}],66:[function(require,module,exports){
 /**
  * http://en.wikipedia.org/wiki/YouTube#Quality_and_formats
  */
@@ -12169,7 +12489,7 @@ module.exports = {
 
 };
 
-},{}],66:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 (function (setImmediate){(function (){
 const PassThrough = require('stream').PassThrough;
 const getInfo = require('./info');
@@ -12380,7 +12700,7 @@ ytdl.downloadFromInfo = (info, options) => {
 };
 
 }).call(this)}).call(this,require("timers").setImmediate)
-},{"../package.json":72,"./format-utils":64,"./info":68,"./sig":69,"./url-utils":70,"./utils":71,"m3u8stream":11,"miniget":15,"stream":23,"timers":58}],67:[function(require,module,exports){
+},{"../package.json":73,"./format-utils":65,"./info":69,"./sig":70,"./url-utils":71,"./utils":72,"m3u8stream":11,"miniget":15,"stream":23,"timers":59}],68:[function(require,module,exports){
 const utils = require('./utils');
 const qs = require('querystring');
 const { parseTimestamp } = require('m3u8stream');
@@ -12747,7 +13067,7 @@ exports.getChapters = info => {
   }));
 };
 
-},{"./utils":71,"m3u8stream":11,"querystring":20}],68:[function(require,module,exports){
+},{"./utils":72,"m3u8stream":11,"querystring":20}],69:[function(require,module,exports){
 const querystring = require('querystring');
 const sax = require('sax');
 const miniget = require('miniget');
@@ -13236,7 +13556,7 @@ exports.validateURL = urlUtils.validateURL;
 exports.getURLVideoID = urlUtils.getURLVideoID;
 exports.getVideoID = urlUtils.getVideoID;
 
-},{"./cache":63,"./format-utils":64,"./info-extras":67,"./sig":69,"./url-utils":70,"./utils":71,"miniget":15,"querystring":20,"sax":22,"timers":58}],69:[function(require,module,exports){
+},{"./cache":64,"./format-utils":65,"./info-extras":68,"./sig":70,"./url-utils":71,"./utils":72,"miniget":15,"querystring":20,"sax":22,"timers":59}],70:[function(require,module,exports){
 const querystring = require('querystring');
 const Cache = require('./cache');
 const utils = require('./utils');
@@ -13484,7 +13804,7 @@ exports.decipherFormats = async(formats, html5player, options) => {
   return decipheredFormats;
 };
 
-},{"./cache":63,"./utils":71,"querystring":20}],70:[function(require,module,exports){
+},{"./cache":64,"./utils":72,"querystring":20}],71:[function(require,module,exports){
 /**
  * Get video ID.
  *
@@ -13577,7 +13897,7 @@ exports.validateURL = string => {
   }
 };
 
-},{}],71:[function(require,module,exports){
+},{}],72:[function(require,module,exports){
 (function (process){(function (){
 const miniget = require('miniget');
 
@@ -13764,7 +14084,7 @@ exports.checkForUpdates = () => {
 };
 
 }).call(this)}).call(this,require('_process'))
-},{"../package.json":72,"_process":16,"miniget":15}],72:[function(require,module,exports){
+},{"../package.json":73,"_process":16,"miniget":15}],73:[function(require,module,exports){
 module.exports={
   "name": "ytdl-core",
   "description": "YouTube video downloader in pure javascript.",

@@ -1,3 +1,5 @@
+const browserify = require("browserify");
+
 function downloadByteArray(bytes, outputFilename) {
     var a = window.document.createElement('a');
     a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
@@ -15,3 +17,5 @@ function onGetClicked() {
 
     browserify.download(url, { isAudioOnly, filename, quality });
 }
+
+window.onunload = browserify.abortDownload;

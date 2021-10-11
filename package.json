@@ -17,6 +17,7 @@
     "levelup": "^5.1.1",
     "memdown": "^6.1.1",
     "stream": "^0.0.2",
+    "streamsaver": "^2.0.5",
     "ytdl-core": "^4.9.1"
   }
 }
