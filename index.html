@@ -11,24 +11,24 @@
 <body>
     <h1>YT</h1>
     <h2>Settings</h2>
-    <label for="AudioOnly">Audio Only:</label>
-    <input type="checkbox" name="AudioOnly" id="audioOnly" />
-    <br />
     <label for="Filename">Output file name:</label>
-    <input placeholder="Filename.extension" name="Filename" id="filename" type="text">
+    <input placeholder="Filename" name="Filename" id="filename" type="text">
     <br />
     <label for="Quality">Quality:</label>
     <select name="Quality" id="quality">
+        <option value="none">Audio</option>
         <option value="highest">Highest</option>
-        <option value="lowest">Lowest</option>
-        <option value="highestaudio">Highest Audio</option>
-        <option value="lowestaudio">Lowest Audio</option>
-        <option value="highestvideo">Highest Video</option>
-        <option value="lowestvideo">Lowest Video</option>
+        <option value="1080p">1080p</option>
+        <option value="720p">720p</option>
+        <option value="480p">medium</option>
+        <option value="360p">360p</option>
     </select>
     <hr />
     <input id="url" placeholder="Url" type="text"> <button onclick="onGetClicked()">Get</button>
     <script src="https://cdn.jsdelivr.net/npm/web-streams-polyfill@2.0.2/dist/ponyfill.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.3/StreamSaver.min.js"></script>
+    <script>
+    </script>
     <script src="bundle.js"></script>
     <script src="index1.js"></script>
 </body>

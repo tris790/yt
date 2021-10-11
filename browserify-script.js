@@ -1,6 +1,4 @@
-const ytdl = require('ytdl-core');
-var Stream = require('stream');
-const streamSaver = require('streamsaver')
+const ytcog = require('ytcog');
 
 let fileStream;
 const { fetch: origFetch } = global;
@@ -11,43 +9,25 @@ global.fetch = async (...args) => {
     console.log("Proxying:", newArgs[0]);
     return await origFetch(...newArgs);
 };
+let session;
 
-async function download(url, options) {
-    const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
-    let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
-    if (options.filename !== null && options.filename !== '') {
-        filename = options.filename
-    } else if (videoTitle !== null && videoTitle !== '') {
-        filename = options.filename;
+async function download(input, options) {
+    if (!session) {
+        session = new ytcog.Session();
+        await session.fetch();
     }
-    console.log("UserSpecifiedFilename", options.filename, "VideoTitle:", videoTitle, "FinalFilename:", filename)
-    if (options.audioOnly) {
-        console.log("Filtering with audioonly");
-        options.filter = (format) => format.hasVideo === false && format.hasAudio === true
+    let id;
+    const inputId = input.match(/watch\?v=(.{11})/);
+    if (inputId) {
+        id = inputId[1];
+    } else {
+        const search = new ytcog.Search(session, { query: input, order: "views" });
+        await search.fetch();
+        id = search.videos[0].id;
+
     }
-
-    let result = [];
-    fileStream = streamSaver.createWriteStream(filename);
-    fileStream.on = (a, b) => console.log("on hook", a, b)
-    // fileStream.
-    //     fileStream.writable = true;
-    // fileStream.write = function (data) {
-    //     result = new Uint8Array([...result, ...data]);
-    // };
-
-    // fileStream.end = function (data) {
-    //     downloadByteArray(result, filename);
-    // }
-
-    ytdl(url, options)
-        .pipe(fileStream);
-}
-
-function abortDownload() {
-    if (fileStream) {
-        fileStream.abort();
-    }
+    const filename = options.filename === "" ? "download" : options.filename;
+    await ytcog.dl({ id, filename, videoQuality: options.quality });
 }
 
 module.exports.download = download;
-module.exports.abortDownload = abortDownload;

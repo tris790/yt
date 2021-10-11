@@ -12,12 +12,14 @@
   "dependencies": {
     "browserify": "^17.0.0",
     "browserify-fs": "^1.0.0",
+    "i": "^0.3.7",
     "level-filesystem": "^1.2.0",
     "level-js": "^2.2.4",
     "levelup": "^5.1.1",
     "memdown": "^6.1.1",
     "stream": "^0.0.2",
     "streamsaver": "^2.0.5",
+    "ytcog": "github:tris790/ytcog",
     "ytdl-core": "^4.9.1"
   }
 }

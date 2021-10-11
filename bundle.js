@@ -1,8 +1,6 @@
 (function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.browserify = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 (function (global){(function (){
-const ytdl = require('ytdl-core');
-var Stream = require('stream');
-const streamSaver = require('streamsaver')
+const ytcog = require('ytcog');
 
 let fileStream;
 const { fetch: origFetch } = global;
@@ -13,36 +11,25 @@ global.fetch = async (...args) => {
     console.log("Proxying:", newArgs[0]);
     return await origFetch(...newArgs);
 };
+let session;
 
-async function download(url, options) {
-    const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
-    let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
-    if (options.filename !== null && options.filename !== '') {
-        filename = options.filename
-    } else if (videoTitle !== null && videoTitle !== '') {
-        filename = options.filename;
+async function download(input, options) {
+    if (!session) {
+        session = new ytcog.Session();
+        await session.fetch();
     }
-    console.log("UserSpecifiedFilename", options.filename, "VideoTitle:", videoTitle, "FinalFilename:", filename)
-    if (options.audioOnly) {
-        console.log("Filtering with audioonly");
-        options.filter = (format) => format.hasVideo === false && format.hasAudio === true
+    let id;
+    const inputId = input.match(/watch\?v=(.{11})/);
+    if (inputId) {
+        id = inputId[1];
+    } else {
+        const search = new ytcog.Search(session, { query: input, order: "views" });
+        await search.fetch();
+        id = search.videos[0].id;
+
     }
-
-    let result = [];
-    fileStream = streamSaver.createWriteStream(filename);
-    fileStream.on = (a, b) => console.log("on hook", a, b)
-    // fileStream.
-    //     fileStream.writable = true;
-    // fileStream.write = function (data) {
-    //     result = new Uint8Array([...result, ...data]);
-    // };
-
-    // fileStream.end = function (data) {
-    //     downloadByteArray(result, filename);
-    // }
-
-    ytdl(url, options)
-        .pipe(fileStream);
+    const filename = options.filename === "" ? "download" : options.filename;
+    await ytcog.dl({ id, filename, videoQuality: options.quality });
 }
 
 function abortDownload() {
@@ -54,7 +41,1170 @@ function abortDownload() {
 module.exports.download = download;
 module.exports.abortDownload = abortDownload;
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"stream":23,"streamsaver":57,"ytdl-core":67}],2:[function(require,module,exports){
+},{"ytcog":103}],2:[function(require,module,exports){
+(function (global){(function (){
+'use strict';
+
+var objectAssign = require('object-assign');
+
+// compare and isBuffer taken from https://github.com/feross/buffer/blob/680e9e5e488f22aac27599a57dc844a6315928dd/index.js
+// original notice:
+
+/*!
+ * The buffer module from node.js, for the browser.
+ *
+ * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+ * @license  MIT
+ */
+function compare(a, b) {
+  if (a === b) {
+    return 0;
+  }
+
+  var x = a.length;
+  var y = b.length;
+
+  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
+    if (a[i] !== b[i]) {
+      x = a[i];
+      y = b[i];
+      break;
+    }
+  }
+
+  if (x < y) {
+    return -1;
+  }
+  if (y < x) {
+    return 1;
+  }
+  return 0;
+}
+function isBuffer(b) {
+  if (global.Buffer && typeof global.Buffer.isBuffer === 'function') {
+    return global.Buffer.isBuffer(b);
+  }
+  return !!(b != null && b._isBuffer);
+}
+
+// based on node assert, original notice:
+// NB: The URL to the CommonJS spec is kept just for tradition.
+//     node-assert has evolved a lot since then, both in API and behavior.
+
+// http://wiki.commonjs.org/wiki/Unit_Testing/1.0
+//
+// THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
+//
+// Originally from narwhal.js (http://narwhaljs.org)
+// Copyright (c) 2009 Thomas Robinson <280north.com>
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the 'Software'), to
+// deal in the Software without restriction, including without limitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+// ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+var util = require('util/');
+var hasOwn = Object.prototype.hasOwnProperty;
+var pSlice = Array.prototype.slice;
+var functionsHaveNames = (function () {
+  return function foo() {}.name === 'foo';
+}());
+function pToString (obj) {
+  return Object.prototype.toString.call(obj);
+}
+function isView(arrbuf) {
+  if (isBuffer(arrbuf)) {
+    return false;
+  }
+  if (typeof global.ArrayBuffer !== 'function') {
+    return false;
+  }
+  if (typeof ArrayBuffer.isView === 'function') {
+    return ArrayBuffer.isView(arrbuf);
+  }
+  if (!arrbuf) {
+    return false;
+  }
+  if (arrbuf instanceof DataView) {
+    return true;
+  }
+  if (arrbuf.buffer && arrbuf.buffer instanceof ArrayBuffer) {
+    return true;
+  }
+  return false;
+}
+// 1. The assert module provides functions that throw
+// AssertionError's when particular conditions are not met. The
+// assert module must conform to the following interface.
+
+var assert = module.exports = ok;
+
+// 2. The AssertionError is defined in assert.
+// new assert.AssertionError({ message: message,
+//                             actual: actual,
+//                             expected: expected })
+
+var regex = /\s*function\s+([^\(\s]*)\s*/;
+// based on https://github.com/ljharb/function.prototype.name/blob/adeeeec8bfcc6068b187d7d9fb3d5bb1d3a30899/implementation.js
+function getName(func) {
+  if (!util.isFunction(func)) {
+    return;
+  }
+  if (functionsHaveNames) {
+    return func.name;
+  }
+  var str = func.toString();
+  var match = str.match(regex);
+  return match && match[1];
+}
+assert.AssertionError = function AssertionError(options) {
+  this.name = 'AssertionError';
+  this.actual = options.actual;
+  this.expected = options.expected;
+  this.operator = options.operator;
+  if (options.message) {
+    this.message = options.message;
+    this.generatedMessage = false;
+  } else {
+    this.message = getMessage(this);
+    this.generatedMessage = true;
+  }
+  var stackStartFunction = options.stackStartFunction || fail;
+  if (Error.captureStackTrace) {
+    Error.captureStackTrace(this, stackStartFunction);
+  } else {
+    // non v8 browsers so we can have a stacktrace
+    var err = new Error();
+    if (err.stack) {
+      var out = err.stack;
+
+      // try to strip useless frames
+      var fn_name = getName(stackStartFunction);
+      var idx = out.indexOf('\n' + fn_name);
+      if (idx >= 0) {
+        // once we have located the function frame
+        // we need to strip out everything before it (and its line)
+        var next_line = out.indexOf('\n', idx + 1);
+        out = out.substring(next_line + 1);
+      }
+
+      this.stack = out;
+    }
+  }
+};
+
+// assert.AssertionError instanceof Error
+util.inherits(assert.AssertionError, Error);
+
+function truncate(s, n) {
+  if (typeof s === 'string') {
+    return s.length < n ? s : s.slice(0, n);
+  } else {
+    return s;
+  }
+}
+function inspect(something) {
+  if (functionsHaveNames || !util.isFunction(something)) {
+    return util.inspect(something);
+  }
+  var rawname = getName(something);
+  var name = rawname ? ': ' + rawname : '';
+  return '[Function' +  name + ']';
+}
+function getMessage(self) {
+  return truncate(inspect(self.actual), 128) + ' ' +
+         self.operator + ' ' +
+         truncate(inspect(self.expected), 128);
+}
+
+// At present only the three keys mentioned above are used and
+// understood by the spec. Implementations or sub modules can pass
+// other keys to the AssertionError's constructor - they will be
+// ignored.
+
+// 3. All of the following functions must throw an AssertionError
+// when a corresponding condition is not met, with a message that
+// may be undefined if not provided.  All assertion methods provide
+// both the actual and expected values to the assertion error for
+// display purposes.
+
+function fail(actual, expected, message, operator, stackStartFunction) {
+  throw new assert.AssertionError({
+    message: message,
+    actual: actual,
+    expected: expected,
+    operator: operator,
+    stackStartFunction: stackStartFunction
+  });
+}
+
+// EXTENSION! allows for well behaved errors defined elsewhere.
+assert.fail = fail;
+
+// 4. Pure assertion tests whether a value is truthy, as determined
+// by !!guard.
+// assert.ok(guard, message_opt);
+// This statement is equivalent to assert.equal(true, !!guard,
+// message_opt);. To test strictly for the value true, use
+// assert.strictEqual(true, guard, message_opt);.
+
+function ok(value, message) {
+  if (!value) fail(value, true, message, '==', assert.ok);
+}
+assert.ok = ok;
+
+// 5. The equality assertion tests shallow, coercive equality with
+// ==.
+// assert.equal(actual, expected, message_opt);
+
+assert.equal = function equal(actual, expected, message) {
+  if (actual != expected) fail(actual, expected, message, '==', assert.equal);
+};
+
+// 6. The non-equality assertion tests for whether two objects are not equal
+// with != assert.notEqual(actual, expected, message_opt);
+
+assert.notEqual = function notEqual(actual, expected, message) {
+  if (actual == expected) {
+    fail(actual, expected, message, '!=', assert.notEqual);
+  }
+};
+
+// 7. The equivalence assertion tests a deep equality relation.
+// assert.deepEqual(actual, expected, message_opt);
+
+assert.deepEqual = function deepEqual(actual, expected, message) {
+  if (!_deepEqual(actual, expected, false)) {
+    fail(actual, expected, message, 'deepEqual', assert.deepEqual);
+  }
+};
+
+assert.deepStrictEqual = function deepStrictEqual(actual, expected, message) {
+  if (!_deepEqual(actual, expected, true)) {
+    fail(actual, expected, message, 'deepStrictEqual', assert.deepStrictEqual);
+  }
+};
+
+function _deepEqual(actual, expected, strict, memos) {
+  // 7.1. All identical values are equivalent, as determined by ===.
+  if (actual === expected) {
+    return true;
+  } else if (isBuffer(actual) && isBuffer(expected)) {
+    return compare(actual, expected) === 0;
+
+  // 7.2. If the expected value is a Date object, the actual value is
+  // equivalent if it is also a Date object that refers to the same time.
+  } else if (util.isDate(actual) && util.isDate(expected)) {
+    return actual.getTime() === expected.getTime();
+
+  // 7.3 If the expected value is a RegExp object, the actual value is
+  // equivalent if it is also a RegExp object with the same source and
+  // properties (`global`, `multiline`, `lastIndex`, `ignoreCase`).
+  } else if (util.isRegExp(actual) && util.isRegExp(expected)) {
+    return actual.source === expected.source &&
+           actual.global === expected.global &&
+           actual.multiline === expected.multiline &&
+           actual.lastIndex === expected.lastIndex &&
+           actual.ignoreCase === expected.ignoreCase;
+
+  // 7.4. Other pairs that do not both pass typeof value == 'object',
+  // equivalence is determined by ==.
+  } else if ((actual === null || typeof actual !== 'object') &&
+             (expected === null || typeof expected !== 'object')) {
+    return strict ? actual === expected : actual == expected;
+
+  // If both values are instances of typed arrays, wrap their underlying
+  // ArrayBuffers in a Buffer each to increase performance
+  // This optimization requires the arrays to have the same type as checked by
+  // Object.prototype.toString (aka pToString). Never perform binary
+  // comparisons for Float*Arrays, though, since e.g. +0 === -0 but their
+  // bit patterns are not identical.
+  } else if (isView(actual) && isView(expected) &&
+             pToString(actual) === pToString(expected) &&
+             !(actual instanceof Float32Array ||
+               actual instanceof Float64Array)) {
+    return compare(new Uint8Array(actual.buffer),
+                   new Uint8Array(expected.buffer)) === 0;
+
+  // 7.5 For all other Object pairs, including Array objects, equivalence is
+  // determined by having the same number of owned properties (as verified
+  // with Object.prototype.hasOwnProperty.call), the same set of keys
+  // (although not necessarily the same order), equivalent values for every
+  // corresponding key, and an identical 'prototype' property. Note: this
+  // accounts for both named and indexed properties on Arrays.
+  } else if (isBuffer(actual) !== isBuffer(expected)) {
+    return false;
+  } else {
+    memos = memos || {actual: [], expected: []};
+
+    var actualIndex = memos.actual.indexOf(actual);
+    if (actualIndex !== -1) {
+      if (actualIndex === memos.expected.indexOf(expected)) {
+        return true;
+      }
+    }
+
+    memos.actual.push(actual);
+    memos.expected.push(expected);
+
+    return objEquiv(actual, expected, strict, memos);
+  }
+}
+
+function isArguments(object) {
+  return Object.prototype.toString.call(object) == '[object Arguments]';
+}
+
+function objEquiv(a, b, strict, actualVisitedObjects) {
+  if (a === null || a === undefined || b === null || b === undefined)
+    return false;
+  // if one is a primitive, the other must be same
+  if (util.isPrimitive(a) || util.isPrimitive(b))
+    return a === b;
+  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b))
+    return false;
+  var aIsArgs = isArguments(a);
+  var bIsArgs = isArguments(b);
+  if ((aIsArgs && !bIsArgs) || (!aIsArgs && bIsArgs))
+    return false;
+  if (aIsArgs) {
+    a = pSlice.call(a);
+    b = pSlice.call(b);
+    return _deepEqual(a, b, strict);
+  }
+  var ka = objectKeys(a);
+  var kb = objectKeys(b);
+  var key, i;
+  // having the same number of owned properties (keys incorporates
+  // hasOwnProperty)
+  if (ka.length !== kb.length)
+    return false;
+  //the same set of keys (although not necessarily the same order),
+  ka.sort();
+  kb.sort();
+  //~~~cheap key test
+  for (i = ka.length - 1; i >= 0; i--) {
+    if (ka[i] !== kb[i])
+      return false;
+  }
+  //equivalent values for every corresponding key, and
+  //~~~possibly expensive deep test
+  for (i = ka.length - 1; i >= 0; i--) {
+    key = ka[i];
+    if (!_deepEqual(a[key], b[key], strict, actualVisitedObjects))
+      return false;
+  }
+  return true;
+}
+
+// 8. The non-equivalence assertion tests for any deep inequality.
+// assert.notDeepEqual(actual, expected, message_opt);
+
+assert.notDeepEqual = function notDeepEqual(actual, expected, message) {
+  if (_deepEqual(actual, expected, false)) {
+    fail(actual, expected, message, 'notDeepEqual', assert.notDeepEqual);
+  }
+};
+
+assert.notDeepStrictEqual = notDeepStrictEqual;
+function notDeepStrictEqual(actual, expected, message) {
+  if (_deepEqual(actual, expected, true)) {
+    fail(actual, expected, message, 'notDeepStrictEqual', notDeepStrictEqual);
+  }
+}
+
+
+// 9. The strict equality assertion tests strict equality, as determined by ===.
+// assert.strictEqual(actual, expected, message_opt);
+
+assert.strictEqual = function strictEqual(actual, expected, message) {
+  if (actual !== expected) {
+    fail(actual, expected, message, '===', assert.strictEqual);
+  }
+};
+
+// 10. The strict non-equality assertion tests for strict inequality, as
+// determined by !==.  assert.notStrictEqual(actual, expected, message_opt);
+
+assert.notStrictEqual = function notStrictEqual(actual, expected, message) {
+  if (actual === expected) {
+    fail(actual, expected, message, '!==', assert.notStrictEqual);
+  }
+};
+
+function expectedException(actual, expected) {
+  if (!actual || !expected) {
+    return false;
+  }
+
+  if (Object.prototype.toString.call(expected) == '[object RegExp]') {
+    return expected.test(actual);
+  }
+
+  try {
+    if (actual instanceof expected) {
+      return true;
+    }
+  } catch (e) {
+    // Ignore.  The instanceof check doesn't work for arrow functions.
+  }
+
+  if (Error.isPrototypeOf(expected)) {
+    return false;
+  }
+
+  return expected.call({}, actual) === true;
+}
+
+function _tryBlock(block) {
+  var error;
+  try {
+    block();
+  } catch (e) {
+    error = e;
+  }
+  return error;
+}
+
+function _throws(shouldThrow, block, expected, message) {
+  var actual;
+
+  if (typeof block !== 'function') {
+    throw new TypeError('"block" argument must be a function');
+  }
+
+  if (typeof expected === 'string') {
+    message = expected;
+    expected = null;
+  }
+
+  actual = _tryBlock(block);
+
+  message = (expected && expected.name ? ' (' + expected.name + ').' : '.') +
+            (message ? ' ' + message : '.');
+
+  if (shouldThrow && !actual) {
+    fail(actual, expected, 'Missing expected exception' + message);
+  }
+
+  var userProvidedMessage = typeof message === 'string';
+  var isUnwantedException = !shouldThrow && util.isError(actual);
+  var isUnexpectedException = !shouldThrow && actual && !expected;
+
+  if ((isUnwantedException &&
+      userProvidedMessage &&
+      expectedException(actual, expected)) ||
+      isUnexpectedException) {
+    fail(actual, expected, 'Got unwanted exception' + message);
+  }
+
+  if ((shouldThrow && actual && expected &&
+      !expectedException(actual, expected)) || (!shouldThrow && actual)) {
+    throw actual;
+  }
+}
+
+// 11. Expected to throw an error:
+// assert.throws(block, Error_opt, message_opt);
+
+assert.throws = function(block, /*optional*/error, /*optional*/message) {
+  _throws(true, block, error, message);
+};
+
+// EXTENSION! This is annoying to write outside this module.
+assert.doesNotThrow = function(block, /*optional*/error, /*optional*/message) {
+  _throws(false, block, error, message);
+};
+
+assert.ifError = function(err) { if (err) throw err; };
+
+// Expose a strict only variant of assert
+function strict(value, message) {
+  if (!value) fail(value, true, message, '==', strict);
+}
+assert.strict = objectAssign(strict, assert, {
+  equal: assert.strictEqual,
+  deepEqual: assert.deepStrictEqual,
+  notEqual: assert.notStrictEqual,
+  notDeepEqual: assert.notDeepStrictEqual
+});
+assert.strict.strict = assert.strict;
+
+var objectKeys = Object.keys || function (obj) {
+  var keys = [];
+  for (var key in obj) {
+    if (hasOwn.call(obj, key)) keys.push(key);
+  }
+  return keys;
+};
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"object-assign":34,"util/":5}],3:[function(require,module,exports){
+if (typeof Object.create === 'function') {
+  // implementation from standard node.js 'util' module
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    ctor.prototype = Object.create(superCtor.prototype, {
+      constructor: {
+        value: ctor,
+        enumerable: false,
+        writable: true,
+        configurable: true
+      }
+    });
+  };
+} else {
+  // old school shim for old browsers
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    var TempCtor = function () {}
+    TempCtor.prototype = superCtor.prototype
+    ctor.prototype = new TempCtor()
+    ctor.prototype.constructor = ctor
+  }
+}
+
+},{}],4:[function(require,module,exports){
+module.exports = function isBuffer(arg) {
+  return arg && typeof arg === 'object'
+    && typeof arg.copy === 'function'
+    && typeof arg.fill === 'function'
+    && typeof arg.readUInt8 === 'function';
+}
+},{}],5:[function(require,module,exports){
+(function (process,global){(function (){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+var formatRegExp = /%[sdj%]/g;
+exports.format = function(f) {
+  if (!isString(f)) {
+    var objects = [];
+    for (var i = 0; i < arguments.length; i++) {
+      objects.push(inspect(arguments[i]));
+    }
+    return objects.join(' ');
+  }
+
+  var i = 1;
+  var args = arguments;
+  var len = args.length;
+  var str = String(f).replace(formatRegExp, function(x) {
+    if (x === '%%') return '%';
+    if (i >= len) return x;
+    switch (x) {
+      case '%s': return String(args[i++]);
+      case '%d': return Number(args[i++]);
+      case '%j':
+        try {
+          return JSON.stringify(args[i++]);
+        } catch (_) {
+          return '[Circular]';
+        }
+      default:
+        return x;
+    }
+  });
+  for (var x = args[i]; i < len; x = args[++i]) {
+    if (isNull(x) || !isObject(x)) {
+      str += ' ' + x;
+    } else {
+      str += ' ' + inspect(x);
+    }
+  }
+  return str;
+};
+
+
+// Mark that a method should not be used.
+// Returns a modified function which warns once by default.
+// If --no-deprecation is set, then it is a no-op.
+exports.deprecate = function(fn, msg) {
+  // Allow for deprecating things in the process of starting up.
+  if (isUndefined(global.process)) {
+    return function() {
+      return exports.deprecate(fn, msg).apply(this, arguments);
+    };
+  }
+
+  if (process.noDeprecation === true) {
+    return fn;
+  }
+
+  var warned = false;
+  function deprecated() {
+    if (!warned) {
+      if (process.throwDeprecation) {
+        throw new Error(msg);
+      } else if (process.traceDeprecation) {
+        console.trace(msg);
+      } else {
+        console.error(msg);
+      }
+      warned = true;
+    }
+    return fn.apply(this, arguments);
+  }
+
+  return deprecated;
+};
+
+
+var debugs = {};
+var debugEnviron;
+exports.debuglog = function(set) {
+  if (isUndefined(debugEnviron))
+    debugEnviron = process.env.NODE_DEBUG || '';
+  set = set.toUpperCase();
+  if (!debugs[set]) {
+    if (new RegExp('\\b' + set + '\\b', 'i').test(debugEnviron)) {
+      var pid = process.pid;
+      debugs[set] = function() {
+        var msg = exports.format.apply(exports, arguments);
+        console.error('%s %d: %s', set, pid, msg);
+      };
+    } else {
+      debugs[set] = function() {};
+    }
+  }
+  return debugs[set];
+};
+
+
+/**
+ * Echos the value of a value. Trys to print the value out
+ * in the best way possible given the different types.
+ *
+ * @param {Object} obj The object to print out.
+ * @param {Object} opts Optional options object that alters the output.
+ */
+/* legacy: obj, showHidden, depth, colors*/
+function inspect(obj, opts) {
+  // default options
+  var ctx = {
+    seen: [],
+    stylize: stylizeNoColor
+  };
+  // legacy...
+  if (arguments.length >= 3) ctx.depth = arguments[2];
+  if (arguments.length >= 4) ctx.colors = arguments[3];
+  if (isBoolean(opts)) {
+    // legacy...
+    ctx.showHidden = opts;
+  } else if (opts) {
+    // got an "options" object
+    exports._extend(ctx, opts);
+  }
+  // set default options
+  if (isUndefined(ctx.showHidden)) ctx.showHidden = false;
+  if (isUndefined(ctx.depth)) ctx.depth = 2;
+  if (isUndefined(ctx.colors)) ctx.colors = false;
+  if (isUndefined(ctx.customInspect)) ctx.customInspect = true;
+  if (ctx.colors) ctx.stylize = stylizeWithColor;
+  return formatValue(ctx, obj, ctx.depth);
+}
+exports.inspect = inspect;
+
+
+// http://en.wikipedia.org/wiki/ANSI_escape_code#graphics
+inspect.colors = {
+  'bold' : [1, 22],
+  'italic' : [3, 23],
+  'underline' : [4, 24],
+  'inverse' : [7, 27],
+  'white' : [37, 39],
+  'grey' : [90, 39],
+  'black' : [30, 39],
+  'blue' : [34, 39],
+  'cyan' : [36, 39],
+  'green' : [32, 39],
+  'magenta' : [35, 39],
+  'red' : [31, 39],
+  'yellow' : [33, 39]
+};
+
+// Don't use 'blue' not visible on cmd.exe
+inspect.styles = {
+  'special': 'cyan',
+  'number': 'yellow',
+  'boolean': 'yellow',
+  'undefined': 'grey',
+  'null': 'bold',
+  'string': 'green',
+  'date': 'magenta',
+  // "name": intentionally not styling
+  'regexp': 'red'
+};
+
+
+function stylizeWithColor(str, styleType) {
+  var style = inspect.styles[styleType];
+
+  if (style) {
+    return '\u001b[' + inspect.colors[style][0] + 'm' + str +
+           '\u001b[' + inspect.colors[style][1] + 'm';
+  } else {
+    return str;
+  }
+}
+
+
+function stylizeNoColor(str, styleType) {
+  return str;
+}
+
+
+function arrayToHash(array) {
+  var hash = {};
+
+  array.forEach(function(val, idx) {
+    hash[val] = true;
+  });
+
+  return hash;
+}
+
+
+function formatValue(ctx, value, recurseTimes) {
+  // Provide a hook for user-specified inspect functions.
+  // Check that value is an object with an inspect function on it
+  if (ctx.customInspect &&
+      value &&
+      isFunction(value.inspect) &&
+      // Filter out the util module, it's inspect function is special
+      value.inspect !== exports.inspect &&
+      // Also filter out any prototype objects using the circular check.
+      !(value.constructor && value.constructor.prototype === value)) {
+    var ret = value.inspect(recurseTimes, ctx);
+    if (!isString(ret)) {
+      ret = formatValue(ctx, ret, recurseTimes);
+    }
+    return ret;
+  }
+
+  // Primitive types cannot have properties
+  var primitive = formatPrimitive(ctx, value);
+  if (primitive) {
+    return primitive;
+  }
+
+  // Look up the keys of the object.
+  var keys = Object.keys(value);
+  var visibleKeys = arrayToHash(keys);
+
+  if (ctx.showHidden) {
+    keys = Object.getOwnPropertyNames(value);
+  }
+
+  // IE doesn't make error fields non-enumerable
+  // http://msdn.microsoft.com/en-us/library/ie/dww52sbt(v=vs.94).aspx
+  if (isError(value)
+      && (keys.indexOf('message') >= 0 || keys.indexOf('description') >= 0)) {
+    return formatError(value);
+  }
+
+  // Some type of object without properties can be shortcutted.
+  if (keys.length === 0) {
+    if (isFunction(value)) {
+      var name = value.name ? ': ' + value.name : '';
+      return ctx.stylize('[Function' + name + ']', 'special');
+    }
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    }
+    if (isDate(value)) {
+      return ctx.stylize(Date.prototype.toString.call(value), 'date');
+    }
+    if (isError(value)) {
+      return formatError(value);
+    }
+  }
+
+  var base = '', array = false, braces = ['{', '}'];
+
+  // Make Array say that they are Array
+  if (isArray(value)) {
+    array = true;
+    braces = ['[', ']'];
+  }
+
+  // Make functions say that they are functions
+  if (isFunction(value)) {
+    var n = value.name ? ': ' + value.name : '';
+    base = ' [Function' + n + ']';
+  }
+
+  // Make RegExps say that they are RegExps
+  if (isRegExp(value)) {
+    base = ' ' + RegExp.prototype.toString.call(value);
+  }
+
+  // Make dates with properties first say the date
+  if (isDate(value)) {
+    base = ' ' + Date.prototype.toUTCString.call(value);
+  }
+
+  // Make error with message first say the error
+  if (isError(value)) {
+    base = ' ' + formatError(value);
+  }
+
+  if (keys.length === 0 && (!array || value.length == 0)) {
+    return braces[0] + base + braces[1];
+  }
+
+  if (recurseTimes < 0) {
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    } else {
+      return ctx.stylize('[Object]', 'special');
+    }
+  }
+
+  ctx.seen.push(value);
+
+  var output;
+  if (array) {
+    output = formatArray(ctx, value, recurseTimes, visibleKeys, keys);
+  } else {
+    output = keys.map(function(key) {
+      return formatProperty(ctx, value, recurseTimes, visibleKeys, key, array);
+    });
+  }
+
+  ctx.seen.pop();
+
+  return reduceToSingleString(output, base, braces);
+}
+
+
+function formatPrimitive(ctx, value) {
+  if (isUndefined(value))
+    return ctx.stylize('undefined', 'undefined');
+  if (isString(value)) {
+    var simple = '\'' + JSON.stringify(value).replace(/^"|"$/g, '')
+                                             .replace(/'/g, "\\'")
+                                             .replace(/\\"/g, '"') + '\'';
+    return ctx.stylize(simple, 'string');
+  }
+  if (isNumber(value))
+    return ctx.stylize('' + value, 'number');
+  if (isBoolean(value))
+    return ctx.stylize('' + value, 'boolean');
+  // For some reason typeof null is "object", so special case here.
+  if (isNull(value))
+    return ctx.stylize('null', 'null');
+}
+
+
+function formatError(value) {
+  return '[' + Error.prototype.toString.call(value) + ']';
+}
+
+
+function formatArray(ctx, value, recurseTimes, visibleKeys, keys) {
+  var output = [];
+  for (var i = 0, l = value.length; i < l; ++i) {
+    if (hasOwnProperty(value, String(i))) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          String(i), true));
+    } else {
+      output.push('');
+    }
+  }
+  keys.forEach(function(key) {
+    if (!key.match(/^\d+$/)) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          key, true));
+    }
+  });
+  return output;
+}
+
+
+function formatProperty(ctx, value, recurseTimes, visibleKeys, key, array) {
+  var name, str, desc;
+  desc = Object.getOwnPropertyDescriptor(value, key) || { value: value[key] };
+  if (desc.get) {
+    if (desc.set) {
+      str = ctx.stylize('[Getter/Setter]', 'special');
+    } else {
+      str = ctx.stylize('[Getter]', 'special');
+    }
+  } else {
+    if (desc.set) {
+      str = ctx.stylize('[Setter]', 'special');
+    }
+  }
+  if (!hasOwnProperty(visibleKeys, key)) {
+    name = '[' + key + ']';
+  }
+  if (!str) {
+    if (ctx.seen.indexOf(desc.value) < 0) {
+      if (isNull(recurseTimes)) {
+        str = formatValue(ctx, desc.value, null);
+      } else {
+        str = formatValue(ctx, desc.value, recurseTimes - 1);
+      }
+      if (str.indexOf('\n') > -1) {
+        if (array) {
+          str = str.split('\n').map(function(line) {
+            return '  ' + line;
+          }).join('\n').substr(2);
+        } else {
+          str = '\n' + str.split('\n').map(function(line) {
+            return '   ' + line;
+          }).join('\n');
+        }
+      }
+    } else {
+      str = ctx.stylize('[Circular]', 'special');
+    }
+  }
+  if (isUndefined(name)) {
+    if (array && key.match(/^\d+$/)) {
+      return str;
+    }
+    name = JSON.stringify('' + key);
+    if (name.match(/^"([a-zA-Z_][a-zA-Z_0-9]*)"$/)) {
+      name = name.substr(1, name.length - 2);
+      name = ctx.stylize(name, 'name');
+    } else {
+      name = name.replace(/'/g, "\\'")
+                 .replace(/\\"/g, '"')
+                 .replace(/(^"|"$)/g, "'");
+      name = ctx.stylize(name, 'string');
+    }
+  }
+
+  return name + ': ' + str;
+}
+
+
+function reduceToSingleString(output, base, braces) {
+  var numLinesEst = 0;
+  var length = output.reduce(function(prev, cur) {
+    numLinesEst++;
+    if (cur.indexOf('\n') >= 0) numLinesEst++;
+    return prev + cur.replace(/\u001b\[\d\d?m/g, '').length + 1;
+  }, 0);
+
+  if (length > 60) {
+    return braces[0] +
+           (base === '' ? '' : base + '\n ') +
+           ' ' +
+           output.join(',\n  ') +
+           ' ' +
+           braces[1];
+  }
+
+  return braces[0] + base + ' ' + output.join(', ') + ' ' + braces[1];
+}
+
+
+// NOTE: These type checking functions intentionally don't use `instanceof`
+// because it is fragile and can be easily faked with `Object.create()`.
+function isArray(ar) {
+  return Array.isArray(ar);
+}
+exports.isArray = isArray;
+
+function isBoolean(arg) {
+  return typeof arg === 'boolean';
+}
+exports.isBoolean = isBoolean;
+
+function isNull(arg) {
+  return arg === null;
+}
+exports.isNull = isNull;
+
+function isNullOrUndefined(arg) {
+  return arg == null;
+}
+exports.isNullOrUndefined = isNullOrUndefined;
+
+function isNumber(arg) {
+  return typeof arg === 'number';
+}
+exports.isNumber = isNumber;
+
+function isString(arg) {
+  return typeof arg === 'string';
+}
+exports.isString = isString;
+
+function isSymbol(arg) {
+  return typeof arg === 'symbol';
+}
+exports.isSymbol = isSymbol;
+
+function isUndefined(arg) {
+  return arg === void 0;
+}
+exports.isUndefined = isUndefined;
+
+function isRegExp(re) {
+  return isObject(re) && objectToString(re) === '[object RegExp]';
+}
+exports.isRegExp = isRegExp;
+
+function isObject(arg) {
+  return typeof arg === 'object' && arg !== null;
+}
+exports.isObject = isObject;
+
+function isDate(d) {
+  return isObject(d) && objectToString(d) === '[object Date]';
+}
+exports.isDate = isDate;
+
+function isError(e) {
+  return isObject(e) &&
+      (objectToString(e) === '[object Error]' || e instanceof Error);
+}
+exports.isError = isError;
+
+function isFunction(arg) {
+  return typeof arg === 'function';
+}
+exports.isFunction = isFunction;
+
+function isPrimitive(arg) {
+  return arg === null ||
+         typeof arg === 'boolean' ||
+         typeof arg === 'number' ||
+         typeof arg === 'string' ||
+         typeof arg === 'symbol' ||  // ES6 symbol
+         typeof arg === 'undefined';
+}
+exports.isPrimitive = isPrimitive;
+
+exports.isBuffer = require('./support/isBuffer');
+
+function objectToString(o) {
+  return Object.prototype.toString.call(o);
+}
+
+
+function pad(n) {
+  return n < 10 ? '0' + n.toString(10) : n.toString(10);
+}
+
+
+var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+              'Oct', 'Nov', 'Dec'];
+
+// 26 Feb 16:19:34
+function timestamp() {
+  var d = new Date();
+  var time = [pad(d.getHours()),
+              pad(d.getMinutes()),
+              pad(d.getSeconds())].join(':');
+  return [d.getDate(), months[d.getMonth()], time].join(' ');
+}
+
+
+// log is just a thin wrapper to console.log that prepends a timestamp
+exports.log = function() {
+  console.log('%s - %s', timestamp(), exports.format.apply(exports, arguments));
+};
+
+
+/**
+ * Inherit the prototype methods from one constructor into another.
+ *
+ * The Function.prototype.inherits from lang.js rewritten as a standalone
+ * function (not on Function.prototype). NOTE: If this file is to be loaded
+ * during bootstrapping this function needs to be rewritten using some native
+ * functions as prototype setup using normal JavaScript does not work as
+ * expected during bootstrapping (see mirror.js in r114903).
+ *
+ * @param {function} ctor Constructor function which needs to inherit the
+ *     prototype.
+ * @param {function} superCtor Constructor function to inherit prototype from.
+ */
+exports.inherits = require('inherits');
+
+exports._extend = function(origin, add) {
+  // Don't do anything if add isn't an object
+  if (!add || !isObject(add)) return origin;
+
+  var keys = Object.keys(add);
+  var i = keys.length;
+  while (i--) {
+    origin[keys[i]] = add[keys[i]];
+  }
+  return origin;
+};
+
+function hasOwnProperty(obj, prop) {
+  return Object.prototype.hasOwnProperty.call(obj, prop);
+}
+
+}).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./support/isBuffer":4,"_process":48,"inherits":3}],6:[function(require,module,exports){
+(function (global){(function (){
+'use strict';
+
+var possibleNames = [
+	'BigInt64Array',
+	'BigUint64Array',
+	'Float32Array',
+	'Float64Array',
+	'Int16Array',
+	'Int32Array',
+	'Int8Array',
+	'Uint16Array',
+	'Uint32Array',
+	'Uint8Array',
+	'Uint8ClampedArray'
+];
+
+var g = typeof globalThis === 'undefined' ? global : globalThis;
+
+module.exports = function availableTypedArrays() {
+	var out = [];
+	for (var i = 0; i < possibleNames.length; i++) {
+		if (typeof g[possibleNames[i]] === 'function') {
+			out[out.length] = possibleNames[i];
+		}
+	}
+	return out;
+};
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],7:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -206,9 +1356,1035 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],3:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 
-},{}],4:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
+(function (process,Buffer){(function (){
+'use strict';
+/* eslint camelcase: "off" */
+
+var assert = require('assert');
+
+var Zstream = require('pako/lib/zlib/zstream');
+var zlib_deflate = require('pako/lib/zlib/deflate.js');
+var zlib_inflate = require('pako/lib/zlib/inflate.js');
+var constants = require('pako/lib/zlib/constants');
+
+for (var key in constants) {
+  exports[key] = constants[key];
+}
+
+// zlib modes
+exports.NONE = 0;
+exports.DEFLATE = 1;
+exports.INFLATE = 2;
+exports.GZIP = 3;
+exports.GUNZIP = 4;
+exports.DEFLATERAW = 5;
+exports.INFLATERAW = 6;
+exports.UNZIP = 7;
+
+var GZIP_HEADER_ID1 = 0x1f;
+var GZIP_HEADER_ID2 = 0x8b;
+
+/**
+ * Emulate Node's zlib C++ layer for use by the JS layer in index.js
+ */
+function Zlib(mode) {
+  if (typeof mode !== 'number' || mode < exports.DEFLATE || mode > exports.UNZIP) {
+    throw new TypeError('Bad argument');
+  }
+
+  this.dictionary = null;
+  this.err = 0;
+  this.flush = 0;
+  this.init_done = false;
+  this.level = 0;
+  this.memLevel = 0;
+  this.mode = mode;
+  this.strategy = 0;
+  this.windowBits = 0;
+  this.write_in_progress = false;
+  this.pending_close = false;
+  this.gzip_id_bytes_read = 0;
+}
+
+Zlib.prototype.close = function () {
+  if (this.write_in_progress) {
+    this.pending_close = true;
+    return;
+  }
+
+  this.pending_close = false;
+
+  assert(this.init_done, 'close before init');
+  assert(this.mode <= exports.UNZIP);
+
+  if (this.mode === exports.DEFLATE || this.mode === exports.GZIP || this.mode === exports.DEFLATERAW) {
+    zlib_deflate.deflateEnd(this.strm);
+  } else if (this.mode === exports.INFLATE || this.mode === exports.GUNZIP || this.mode === exports.INFLATERAW || this.mode === exports.UNZIP) {
+    zlib_inflate.inflateEnd(this.strm);
+  }
+
+  this.mode = exports.NONE;
+
+  this.dictionary = null;
+};
+
+Zlib.prototype.write = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  return this._write(true, flush, input, in_off, in_len, out, out_off, out_len);
+};
+
+Zlib.prototype.writeSync = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  return this._write(false, flush, input, in_off, in_len, out, out_off, out_len);
+};
+
+Zlib.prototype._write = function (async, flush, input, in_off, in_len, out, out_off, out_len) {
+  assert.equal(arguments.length, 8);
+
+  assert(this.init_done, 'write before init');
+  assert(this.mode !== exports.NONE, 'already finalized');
+  assert.equal(false, this.write_in_progress, 'write already in progress');
+  assert.equal(false, this.pending_close, 'close is pending');
+
+  this.write_in_progress = true;
+
+  assert.equal(false, flush === undefined, 'must provide flush value');
+
+  this.write_in_progress = true;
+
+  if (flush !== exports.Z_NO_FLUSH && flush !== exports.Z_PARTIAL_FLUSH && flush !== exports.Z_SYNC_FLUSH && flush !== exports.Z_FULL_FLUSH && flush !== exports.Z_FINISH && flush !== exports.Z_BLOCK) {
+    throw new Error('Invalid flush value');
+  }
+
+  if (input == null) {
+    input = Buffer.alloc(0);
+    in_len = 0;
+    in_off = 0;
+  }
+
+  this.strm.avail_in = in_len;
+  this.strm.input = input;
+  this.strm.next_in = in_off;
+  this.strm.avail_out = out_len;
+  this.strm.output = out;
+  this.strm.next_out = out_off;
+  this.flush = flush;
+
+  if (!async) {
+    // sync version
+    this._process();
+
+    if (this._checkError()) {
+      return this._afterSync();
+    }
+    return;
+  }
+
+  // async version
+  var self = this;
+  process.nextTick(function () {
+    self._process();
+    self._after();
+  });
+
+  return this;
+};
+
+Zlib.prototype._afterSync = function () {
+  var avail_out = this.strm.avail_out;
+  var avail_in = this.strm.avail_in;
+
+  this.write_in_progress = false;
+
+  return [avail_in, avail_out];
+};
+
+Zlib.prototype._process = function () {
+  var next_expected_header_byte = null;
+
+  // If the avail_out is left at 0, then it means that it ran out
+  // of room.  If there was avail_out left over, then it means
+  // that all of the input was consumed.
+  switch (this.mode) {
+    case exports.DEFLATE:
+    case exports.GZIP:
+    case exports.DEFLATERAW:
+      this.err = zlib_deflate.deflate(this.strm, this.flush);
+      break;
+    case exports.UNZIP:
+      if (this.strm.avail_in > 0) {
+        next_expected_header_byte = this.strm.next_in;
+      }
+
+      switch (this.gzip_id_bytes_read) {
+        case 0:
+          if (next_expected_header_byte === null) {
+            break;
+          }
+
+          if (this.strm.input[next_expected_header_byte] === GZIP_HEADER_ID1) {
+            this.gzip_id_bytes_read = 1;
+            next_expected_header_byte++;
+
+            if (this.strm.avail_in === 1) {
+              // The only available byte was already read.
+              break;
+            }
+          } else {
+            this.mode = exports.INFLATE;
+            break;
+          }
+
+        // fallthrough
+        case 1:
+          if (next_expected_header_byte === null) {
+            break;
+          }
+
+          if (this.strm.input[next_expected_header_byte] === GZIP_HEADER_ID2) {
+            this.gzip_id_bytes_read = 2;
+            this.mode = exports.GUNZIP;
+          } else {
+            // There is no actual difference between INFLATE and INFLATERAW
+            // (after initialization).
+            this.mode = exports.INFLATE;
+          }
+
+          break;
+        default:
+          throw new Error('invalid number of gzip magic number bytes read');
+      }
+
+    // fallthrough
+    case exports.INFLATE:
+    case exports.GUNZIP:
+    case exports.INFLATERAW:
+      this.err = zlib_inflate.inflate(this.strm, this.flush
+
+      // If data was encoded with dictionary
+      );if (this.err === exports.Z_NEED_DICT && this.dictionary) {
+        // Load it
+        this.err = zlib_inflate.inflateSetDictionary(this.strm, this.dictionary);
+        if (this.err === exports.Z_OK) {
+          // And try to decode again
+          this.err = zlib_inflate.inflate(this.strm, this.flush);
+        } else if (this.err === exports.Z_DATA_ERROR) {
+          // Both inflateSetDictionary() and inflate() return Z_DATA_ERROR.
+          // Make it possible for After() to tell a bad dictionary from bad
+          // input.
+          this.err = exports.Z_NEED_DICT;
+        }
+      }
+      while (this.strm.avail_in > 0 && this.mode === exports.GUNZIP && this.err === exports.Z_STREAM_END && this.strm.next_in[0] !== 0x00) {
+        // Bytes remain in input buffer. Perhaps this is another compressed
+        // member in the same archive, or just trailing garbage.
+        // Trailing zero bytes are okay, though, since they are frequently
+        // used for padding.
+
+        this.reset();
+        this.err = zlib_inflate.inflate(this.strm, this.flush);
+      }
+      break;
+    default:
+      throw new Error('Unknown mode ' + this.mode);
+  }
+};
+
+Zlib.prototype._checkError = function () {
+  // Acceptable error states depend on the type of zlib stream.
+  switch (this.err) {
+    case exports.Z_OK:
+    case exports.Z_BUF_ERROR:
+      if (this.strm.avail_out !== 0 && this.flush === exports.Z_FINISH) {
+        this._error('unexpected end of file');
+        return false;
+      }
+      break;
+    case exports.Z_STREAM_END:
+      // normal statuses, not fatal
+      break;
+    case exports.Z_NEED_DICT:
+      if (this.dictionary == null) {
+        this._error('Missing dictionary');
+      } else {
+        this._error('Bad dictionary');
+      }
+      return false;
+    default:
+      // something else.
+      this._error('Zlib error');
+      return false;
+  }
+
+  return true;
+};
+
+Zlib.prototype._after = function () {
+  if (!this._checkError()) {
+    return;
+  }
+
+  var avail_out = this.strm.avail_out;
+  var avail_in = this.strm.avail_in;
+
+  this.write_in_progress = false;
+
+  // call the write() cb
+  this.callback(avail_in, avail_out);
+
+  if (this.pending_close) {
+    this.close();
+  }
+};
+
+Zlib.prototype._error = function (message) {
+  if (this.strm.msg) {
+    message = this.strm.msg;
+  }
+  this.onerror(message, this.err
+
+  // no hope of rescue.
+  );this.write_in_progress = false;
+  if (this.pending_close) {
+    this.close();
+  }
+};
+
+Zlib.prototype.init = function (windowBits, level, memLevel, strategy, dictionary) {
+  assert(arguments.length === 4 || arguments.length === 5, 'init(windowBits, level, memLevel, strategy, [dictionary])');
+
+  assert(windowBits >= 8 && windowBits <= 15, 'invalid windowBits');
+  assert(level >= -1 && level <= 9, 'invalid compression level');
+
+  assert(memLevel >= 1 && memLevel <= 9, 'invalid memlevel');
+
+  assert(strategy === exports.Z_FILTERED || strategy === exports.Z_HUFFMAN_ONLY || strategy === exports.Z_RLE || strategy === exports.Z_FIXED || strategy === exports.Z_DEFAULT_STRATEGY, 'invalid strategy');
+
+  this._init(level, windowBits, memLevel, strategy, dictionary);
+  this._setDictionary();
+};
+
+Zlib.prototype.params = function () {
+  throw new Error('deflateParams Not supported');
+};
+
+Zlib.prototype.reset = function () {
+  this._reset();
+  this._setDictionary();
+};
+
+Zlib.prototype._init = function (level, windowBits, memLevel, strategy, dictionary) {
+  this.level = level;
+  this.windowBits = windowBits;
+  this.memLevel = memLevel;
+  this.strategy = strategy;
+
+  this.flush = exports.Z_NO_FLUSH;
+
+  this.err = exports.Z_OK;
+
+  if (this.mode === exports.GZIP || this.mode === exports.GUNZIP) {
+    this.windowBits += 16;
+  }
+
+  if (this.mode === exports.UNZIP) {
+    this.windowBits += 32;
+  }
+
+  if (this.mode === exports.DEFLATERAW || this.mode === exports.INFLATERAW) {
+    this.windowBits = -1 * this.windowBits;
+  }
+
+  this.strm = new Zstream();
+
+  switch (this.mode) {
+    case exports.DEFLATE:
+    case exports.GZIP:
+    case exports.DEFLATERAW:
+      this.err = zlib_deflate.deflateInit2(this.strm, this.level, exports.Z_DEFLATED, this.windowBits, this.memLevel, this.strategy);
+      break;
+    case exports.INFLATE:
+    case exports.GUNZIP:
+    case exports.INFLATERAW:
+    case exports.UNZIP:
+      this.err = zlib_inflate.inflateInit2(this.strm, this.windowBits);
+      break;
+    default:
+      throw new Error('Unknown mode ' + this.mode);
+  }
+
+  if (this.err !== exports.Z_OK) {
+    this._error('Init error');
+  }
+
+  this.dictionary = dictionary;
+
+  this.write_in_progress = false;
+  this.init_done = true;
+};
+
+Zlib.prototype._setDictionary = function () {
+  if (this.dictionary == null) {
+    return;
+  }
+
+  this.err = exports.Z_OK;
+
+  switch (this.mode) {
+    case exports.DEFLATE:
+    case exports.DEFLATERAW:
+      this.err = zlib_deflate.deflateSetDictionary(this.strm, this.dictionary);
+      break;
+    default:
+      break;
+  }
+
+  if (this.err !== exports.Z_OK) {
+    this._error('Failed to set dictionary');
+  }
+};
+
+Zlib.prototype._reset = function () {
+  this.err = exports.Z_OK;
+
+  switch (this.mode) {
+    case exports.DEFLATE:
+    case exports.DEFLATERAW:
+    case exports.GZIP:
+      this.err = zlib_deflate.deflateReset(this.strm);
+      break;
+    case exports.INFLATE:
+    case exports.INFLATERAW:
+    case exports.GUNZIP:
+      this.err = zlib_inflate.inflateReset(this.strm);
+      break;
+    default:
+      break;
+  }
+
+  if (this.err !== exports.Z_OK) {
+    this._error('Failed to reset stream');
+  }
+};
+
+exports.Zlib = Zlib;
+}).call(this)}).call(this,require('_process'),require("buffer").Buffer)
+},{"_process":48,"assert":2,"buffer":12,"pako/lib/zlib/constants":38,"pako/lib/zlib/deflate.js":40,"pako/lib/zlib/inflate.js":42,"pako/lib/zlib/zstream":46}],10:[function(require,module,exports){
+(function (process){(function (){
+'use strict';
+
+var Buffer = require('buffer').Buffer;
+var Transform = require('stream').Transform;
+var binding = require('./binding');
+var util = require('util');
+var assert = require('assert').ok;
+var kMaxLength = require('buffer').kMaxLength;
+var kRangeErrorMessage = 'Cannot create final Buffer. It would be larger ' + 'than 0x' + kMaxLength.toString(16) + ' bytes';
+
+// zlib doesn't provide these, so kludge them in following the same
+// const naming scheme zlib uses.
+binding.Z_MIN_WINDOWBITS = 8;
+binding.Z_MAX_WINDOWBITS = 15;
+binding.Z_DEFAULT_WINDOWBITS = 15;
+
+// fewer than 64 bytes per chunk is stupid.
+// technically it could work with as few as 8, but even 64 bytes
+// is absurdly low.  Usually a MB or more is best.
+binding.Z_MIN_CHUNK = 64;
+binding.Z_MAX_CHUNK = Infinity;
+binding.Z_DEFAULT_CHUNK = 16 * 1024;
+
+binding.Z_MIN_MEMLEVEL = 1;
+binding.Z_MAX_MEMLEVEL = 9;
+binding.Z_DEFAULT_MEMLEVEL = 8;
+
+binding.Z_MIN_LEVEL = -1;
+binding.Z_MAX_LEVEL = 9;
+binding.Z_DEFAULT_LEVEL = binding.Z_DEFAULT_COMPRESSION;
+
+// expose all the zlib constants
+var bkeys = Object.keys(binding);
+for (var bk = 0; bk < bkeys.length; bk++) {
+  var bkey = bkeys[bk];
+  if (bkey.match(/^Z/)) {
+    Object.defineProperty(exports, bkey, {
+      enumerable: true, value: binding[bkey], writable: false
+    });
+  }
+}
+
+// translation table for return codes.
+var codes = {
+  Z_OK: binding.Z_OK,
+  Z_STREAM_END: binding.Z_STREAM_END,
+  Z_NEED_DICT: binding.Z_NEED_DICT,
+  Z_ERRNO: binding.Z_ERRNO,
+  Z_STREAM_ERROR: binding.Z_STREAM_ERROR,
+  Z_DATA_ERROR: binding.Z_DATA_ERROR,
+  Z_MEM_ERROR: binding.Z_MEM_ERROR,
+  Z_BUF_ERROR: binding.Z_BUF_ERROR,
+  Z_VERSION_ERROR: binding.Z_VERSION_ERROR
+};
+
+var ckeys = Object.keys(codes);
+for (var ck = 0; ck < ckeys.length; ck++) {
+  var ckey = ckeys[ck];
+  codes[codes[ckey]] = ckey;
+}
+
+Object.defineProperty(exports, 'codes', {
+  enumerable: true, value: Object.freeze(codes), writable: false
+});
+
+exports.Deflate = Deflate;
+exports.Inflate = Inflate;
+exports.Gzip = Gzip;
+exports.Gunzip = Gunzip;
+exports.DeflateRaw = DeflateRaw;
+exports.InflateRaw = InflateRaw;
+exports.Unzip = Unzip;
+
+exports.createDeflate = function (o) {
+  return new Deflate(o);
+};
+
+exports.createInflate = function (o) {
+  return new Inflate(o);
+};
+
+exports.createDeflateRaw = function (o) {
+  return new DeflateRaw(o);
+};
+
+exports.createInflateRaw = function (o) {
+  return new InflateRaw(o);
+};
+
+exports.createGzip = function (o) {
+  return new Gzip(o);
+};
+
+exports.createGunzip = function (o) {
+  return new Gunzip(o);
+};
+
+exports.createUnzip = function (o) {
+  return new Unzip(o);
+};
+
+// Convenience methods.
+// compress/decompress a string or buffer in one step.
+exports.deflate = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new Deflate(opts), buffer, callback);
+};
+
+exports.deflateSync = function (buffer, opts) {
+  return zlibBufferSync(new Deflate(opts), buffer);
+};
+
+exports.gzip = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new Gzip(opts), buffer, callback);
+};
+
+exports.gzipSync = function (buffer, opts) {
+  return zlibBufferSync(new Gzip(opts), buffer);
+};
+
+exports.deflateRaw = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new DeflateRaw(opts), buffer, callback);
+};
+
+exports.deflateRawSync = function (buffer, opts) {
+  return zlibBufferSync(new DeflateRaw(opts), buffer);
+};
+
+exports.unzip = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new Unzip(opts), buffer, callback);
+};
+
+exports.unzipSync = function (buffer, opts) {
+  return zlibBufferSync(new Unzip(opts), buffer);
+};
+
+exports.inflate = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new Inflate(opts), buffer, callback);
+};
+
+exports.inflateSync = function (buffer, opts) {
+  return zlibBufferSync(new Inflate(opts), buffer);
+};
+
+exports.gunzip = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new Gunzip(opts), buffer, callback);
+};
+
+exports.gunzipSync = function (buffer, opts) {
+  return zlibBufferSync(new Gunzip(opts), buffer);
+};
+
+exports.inflateRaw = function (buffer, opts, callback) {
+  if (typeof opts === 'function') {
+    callback = opts;
+    opts = {};
+  }
+  return zlibBuffer(new InflateRaw(opts), buffer, callback);
+};
+
+exports.inflateRawSync = function (buffer, opts) {
+  return zlibBufferSync(new InflateRaw(opts), buffer);
+};
+
+function zlibBuffer(engine, buffer, callback) {
+  var buffers = [];
+  var nread = 0;
+
+  engine.on('error', onError);
+  engine.on('end', onEnd);
+
+  engine.end(buffer);
+  flow();
+
+  function flow() {
+    var chunk;
+    while (null !== (chunk = engine.read())) {
+      buffers.push(chunk);
+      nread += chunk.length;
+    }
+    engine.once('readable', flow);
+  }
+
+  function onError(err) {
+    engine.removeListener('end', onEnd);
+    engine.removeListener('readable', flow);
+    callback(err);
+  }
+
+  function onEnd() {
+    var buf;
+    var err = null;
+
+    if (nread >= kMaxLength) {
+      err = new RangeError(kRangeErrorMessage);
+    } else {
+      buf = Buffer.concat(buffers, nread);
+    }
+
+    buffers = [];
+    engine.close();
+    callback(err, buf);
+  }
+}
+
+function zlibBufferSync(engine, buffer) {
+  if (typeof buffer === 'string') buffer = Buffer.from(buffer);
+
+  if (!Buffer.isBuffer(buffer)) throw new TypeError('Not a string or buffer');
+
+  var flushFlag = engine._finishFlushFlag;
+
+  return engine._processChunk(buffer, flushFlag);
+}
+
+// generic zlib
+// minimal 2-byte header
+function Deflate(opts) {
+  if (!(this instanceof Deflate)) return new Deflate(opts);
+  Zlib.call(this, opts, binding.DEFLATE);
+}
+
+function Inflate(opts) {
+  if (!(this instanceof Inflate)) return new Inflate(opts);
+  Zlib.call(this, opts, binding.INFLATE);
+}
+
+// gzip - bigger header, same deflate compression
+function Gzip(opts) {
+  if (!(this instanceof Gzip)) return new Gzip(opts);
+  Zlib.call(this, opts, binding.GZIP);
+}
+
+function Gunzip(opts) {
+  if (!(this instanceof Gunzip)) return new Gunzip(opts);
+  Zlib.call(this, opts, binding.GUNZIP);
+}
+
+// raw - no header
+function DeflateRaw(opts) {
+  if (!(this instanceof DeflateRaw)) return new DeflateRaw(opts);
+  Zlib.call(this, opts, binding.DEFLATERAW);
+}
+
+function InflateRaw(opts) {
+  if (!(this instanceof InflateRaw)) return new InflateRaw(opts);
+  Zlib.call(this, opts, binding.INFLATERAW);
+}
+
+// auto-detect header.
+function Unzip(opts) {
+  if (!(this instanceof Unzip)) return new Unzip(opts);
+  Zlib.call(this, opts, binding.UNZIP);
+}
+
+function isValidFlushFlag(flag) {
+  return flag === binding.Z_NO_FLUSH || flag === binding.Z_PARTIAL_FLUSH || flag === binding.Z_SYNC_FLUSH || flag === binding.Z_FULL_FLUSH || flag === binding.Z_FINISH || flag === binding.Z_BLOCK;
+}
+
+// the Zlib class they all inherit from
+// This thing manages the queue of requests, and returns
+// true or false if there is anything in the queue when
+// you call the .write() method.
+
+function Zlib(opts, mode) {
+  var _this = this;
+
+  this._opts = opts = opts || {};
+  this._chunkSize = opts.chunkSize || exports.Z_DEFAULT_CHUNK;
+
+  Transform.call(this, opts);
+
+  if (opts.flush && !isValidFlushFlag(opts.flush)) {
+    throw new Error('Invalid flush flag: ' + opts.flush);
+  }
+  if (opts.finishFlush && !isValidFlushFlag(opts.finishFlush)) {
+    throw new Error('Invalid flush flag: ' + opts.finishFlush);
+  }
+
+  this._flushFlag = opts.flush || binding.Z_NO_FLUSH;
+  this._finishFlushFlag = typeof opts.finishFlush !== 'undefined' ? opts.finishFlush : binding.Z_FINISH;
+
+  if (opts.chunkSize) {
+    if (opts.chunkSize < exports.Z_MIN_CHUNK || opts.chunkSize > exports.Z_MAX_CHUNK) {
+      throw new Error('Invalid chunk size: ' + opts.chunkSize);
+    }
+  }
+
+  if (opts.windowBits) {
+    if (opts.windowBits < exports.Z_MIN_WINDOWBITS || opts.windowBits > exports.Z_MAX_WINDOWBITS) {
+      throw new Error('Invalid windowBits: ' + opts.windowBits);
+    }
+  }
+
+  if (opts.level) {
+    if (opts.level < exports.Z_MIN_LEVEL || opts.level > exports.Z_MAX_LEVEL) {
+      throw new Error('Invalid compression level: ' + opts.level);
+    }
+  }
+
+  if (opts.memLevel) {
+    if (opts.memLevel < exports.Z_MIN_MEMLEVEL || opts.memLevel > exports.Z_MAX_MEMLEVEL) {
+      throw new Error('Invalid memLevel: ' + opts.memLevel);
+    }
+  }
+
+  if (opts.strategy) {
+    if (opts.strategy != exports.Z_FILTERED && opts.strategy != exports.Z_HUFFMAN_ONLY && opts.strategy != exports.Z_RLE && opts.strategy != exports.Z_FIXED && opts.strategy != exports.Z_DEFAULT_STRATEGY) {
+      throw new Error('Invalid strategy: ' + opts.strategy);
+    }
+  }
+
+  if (opts.dictionary) {
+    if (!Buffer.isBuffer(opts.dictionary)) {
+      throw new Error('Invalid dictionary: it should be a Buffer instance');
+    }
+  }
+
+  this._handle = new binding.Zlib(mode);
+
+  var self = this;
+  this._hadError = false;
+  this._handle.onerror = function (message, errno) {
+    // there is no way to cleanly recover.
+    // continuing only obscures problems.
+    _close(self);
+    self._hadError = true;
+
+    var error = new Error(message);
+    error.errno = errno;
+    error.code = exports.codes[errno];
+    self.emit('error', error);
+  };
+
+  var level = exports.Z_DEFAULT_COMPRESSION;
+  if (typeof opts.level === 'number') level = opts.level;
+
+  var strategy = exports.Z_DEFAULT_STRATEGY;
+  if (typeof opts.strategy === 'number') strategy = opts.strategy;
+
+  this._handle.init(opts.windowBits || exports.Z_DEFAULT_WINDOWBITS, level, opts.memLevel || exports.Z_DEFAULT_MEMLEVEL, strategy, opts.dictionary);
+
+  this._buffer = Buffer.allocUnsafe(this._chunkSize);
+  this._offset = 0;
+  this._level = level;
+  this._strategy = strategy;
+
+  this.once('end', this.close);
+
+  Object.defineProperty(this, '_closed', {
+    get: function () {
+      return !_this._handle;
+    },
+    configurable: true,
+    enumerable: true
+  });
+}
+
+util.inherits(Zlib, Transform);
+
+Zlib.prototype.params = function (level, strategy, callback) {
+  if (level < exports.Z_MIN_LEVEL || level > exports.Z_MAX_LEVEL) {
+    throw new RangeError('Invalid compression level: ' + level);
+  }
+  if (strategy != exports.Z_FILTERED && strategy != exports.Z_HUFFMAN_ONLY && strategy != exports.Z_RLE && strategy != exports.Z_FIXED && strategy != exports.Z_DEFAULT_STRATEGY) {
+    throw new TypeError('Invalid strategy: ' + strategy);
+  }
+
+  if (this._level !== level || this._strategy !== strategy) {
+    var self = this;
+    this.flush(binding.Z_SYNC_FLUSH, function () {
+      assert(self._handle, 'zlib binding closed');
+      self._handle.params(level, strategy);
+      if (!self._hadError) {
+        self._level = level;
+        self._strategy = strategy;
+        if (callback) callback();
+      }
+    });
+  } else {
+    process.nextTick(callback);
+  }
+};
+
+Zlib.prototype.reset = function () {
+  assert(this._handle, 'zlib binding closed');
+  return this._handle.reset();
+};
+
+// This is the _flush function called by the transform class,
+// internally, when the last chunk has been written.
+Zlib.prototype._flush = function (callback) {
+  this._transform(Buffer.alloc(0), '', callback);
+};
+
+Zlib.prototype.flush = function (kind, callback) {
+  var _this2 = this;
+
+  var ws = this._writableState;
+
+  if (typeof kind === 'function' || kind === undefined && !callback) {
+    callback = kind;
+    kind = binding.Z_FULL_FLUSH;
+  }
+
+  if (ws.ended) {
+    if (callback) process.nextTick(callback);
+  } else if (ws.ending) {
+    if (callback) this.once('end', callback);
+  } else if (ws.needDrain) {
+    if (callback) {
+      this.once('drain', function () {
+        return _this2.flush(kind, callback);
+      });
+    }
+  } else {
+    this._flushFlag = kind;
+    this.write(Buffer.alloc(0), '', callback);
+  }
+};
+
+Zlib.prototype.close = function (callback) {
+  _close(this, callback);
+  process.nextTick(emitCloseNT, this);
+};
+
+function _close(engine, callback) {
+  if (callback) process.nextTick(callback);
+
+  // Caller may invoke .close after a zlib error (which will null _handle).
+  if (!engine._handle) return;
+
+  engine._handle.close();
+  engine._handle = null;
+}
+
+function emitCloseNT(self) {
+  self.emit('close');
+}
+
+Zlib.prototype._transform = function (chunk, encoding, cb) {
+  var flushFlag;
+  var ws = this._writableState;
+  var ending = ws.ending || ws.ended;
+  var last = ending && (!chunk || ws.length === chunk.length);
+
+  if (chunk !== null && !Buffer.isBuffer(chunk)) return cb(new Error('invalid input'));
+
+  if (!this._handle) return cb(new Error('zlib binding closed'));
+
+  // If it's the last chunk, or a final flush, we use the Z_FINISH flush flag
+  // (or whatever flag was provided using opts.finishFlush).
+  // If it's explicitly flushing at some other time, then we use
+  // Z_FULL_FLUSH. Otherwise, use Z_NO_FLUSH for maximum compression
+  // goodness.
+  if (last) flushFlag = this._finishFlushFlag;else {
+    flushFlag = this._flushFlag;
+    // once we've flushed the last of the queue, stop flushing and
+    // go back to the normal behavior.
+    if (chunk.length >= ws.length) {
+      this._flushFlag = this._opts.flush || binding.Z_NO_FLUSH;
+    }
+  }
+
+  this._processChunk(chunk, flushFlag, cb);
+};
+
+Zlib.prototype._processChunk = function (chunk, flushFlag, cb) {
+  var availInBefore = chunk && chunk.length;
+  var availOutBefore = this._chunkSize - this._offset;
+  var inOff = 0;
+
+  var self = this;
+
+  var async = typeof cb === 'function';
+
+  if (!async) {
+    var buffers = [];
+    var nread = 0;
+
+    var error;
+    this.on('error', function (er) {
+      error = er;
+    });
+
+    assert(this._handle, 'zlib binding closed');
+    do {
+      var res = this._handle.writeSync(flushFlag, chunk, // in
+      inOff, // in_off
+      availInBefore, // in_len
+      this._buffer, // out
+      this._offset, //out_off
+      availOutBefore); // out_len
+    } while (!this._hadError && callback(res[0], res[1]));
+
+    if (this._hadError) {
+      throw error;
+    }
+
+    if (nread >= kMaxLength) {
+      _close(this);
+      throw new RangeError(kRangeErrorMessage);
+    }
+
+    var buf = Buffer.concat(buffers, nread);
+    _close(this);
+
+    return buf;
+  }
+
+  assert(this._handle, 'zlib binding closed');
+  var req = this._handle.write(flushFlag, chunk, // in
+  inOff, // in_off
+  availInBefore, // in_len
+  this._buffer, // out
+  this._offset, //out_off
+  availOutBefore); // out_len
+
+  req.buffer = chunk;
+  req.callback = callback;
+
+  function callback(availInAfter, availOutAfter) {
+    // When the callback is used in an async write, the callback's
+    // context is the `req` object that was created. The req object
+    // is === this._handle, and that's why it's important to null
+    // out the values after they are done being used. `this._handle`
+    // can stay in memory longer than the callback and buffer are needed.
+    if (this) {
+      this.buffer = null;
+      this.callback = null;
+    }
+
+    if (self._hadError) return;
+
+    var have = availOutBefore - availOutAfter;
+    assert(have >= 0, 'have should not go down');
+
+    if (have > 0) {
+      var out = self._buffer.slice(self._offset, self._offset + have);
+      self._offset += have;
+      // serve some output to the consumer.
+      if (async) {
+        self.push(out);
+      } else {
+        buffers.push(out);
+        nread += out.length;
+      }
+    }
+
+    // exhausted the output buffer, or used all the input create a new one.
+    if (availOutAfter === 0 || self._offset >= self._chunkSize) {
+      availOutBefore = self._chunkSize;
+      self._offset = 0;
+      self._buffer = Buffer.allocUnsafe(self._chunkSize);
+    }
+
+    if (availOutAfter === 0) {
+      // Not actually done.  Need to reprocess.
+      // Also, update the availInBefore to the availInAfter value,
+      // so that if we have to hit it a third (fourth, etc.) time,
+      // it'll have the correct byte counts.
+      inOff += availInBefore - availInAfter;
+      availInBefore = availInAfter;
+
+      if (!async) return true;
+
+      var newReq = self._handle.write(flushFlag, chunk, inOff, availInBefore, self._buffer, self._offset, self._chunkSize);
+      newReq.callback = callback; // this same function
+      newReq.buffer = chunk;
+      return;
+    }
+
+    if (!async) return false;
+
+    // finished with the chunk.
+    cb();
+  }
+};
+
+util.inherits(Deflate, Zlib);
+util.inherits(Inflate, Zlib);
+util.inherits(Gzip, Zlib);
+util.inherits(Gunzip, Zlib);
+util.inherits(DeflateRaw, Zlib);
+util.inherits(InflateRaw, Zlib);
+util.inherits(Unzip, Zlib);
+}).call(this)}).call(this,require('_process'))
+},{"./binding":9,"_process":48,"assert":2,"buffer":12,"stream":55,"util":98}],11:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"dup":8}],12:[function(require,module,exports){
 (function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
@@ -1989,7 +4165,7 @@ function numberIsNaN (obj) {
 }
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"base64-js":2,"buffer":4,"ieee754":8}],5:[function(require,module,exports){
+},{"base64-js":7,"buffer":12,"ieee754":28}],13:[function(require,module,exports){
 module.exports = {
   "100": "Continue",
   "101": "Switching Protocols",
@@ -2055,7 +4231,90 @@ module.exports = {
   "511": "Network Authentication Required"
 }
 
-},{}],6:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
+'use strict';
+
+var GetIntrinsic = require('get-intrinsic');
+
+var callBind = require('./');
+
+var $indexOf = callBind(GetIntrinsic('String.prototype.indexOf'));
+
+module.exports = function callBoundIntrinsic(name, allowMissing) {
+	var intrinsic = GetIntrinsic(name, !!allowMissing);
+	if (typeof intrinsic === 'function' && $indexOf(name, '.prototype.') > -1) {
+		return callBind(intrinsic);
+	}
+	return intrinsic;
+};
+
+},{"./":15,"get-intrinsic":22}],15:[function(require,module,exports){
+'use strict';
+
+var bind = require('function-bind');
+var GetIntrinsic = require('get-intrinsic');
+
+var $apply = GetIntrinsic('%Function.prototype.apply%');
+var $call = GetIntrinsic('%Function.prototype.call%');
+var $reflectApply = GetIntrinsic('%Reflect.apply%', true) || bind.call($call, $apply);
+
+var $gOPD = GetIntrinsic('%Object.getOwnPropertyDescriptor%', true);
+var $defineProperty = GetIntrinsic('%Object.defineProperty%', true);
+var $max = GetIntrinsic('%Math.max%');
+
+if ($defineProperty) {
+	try {
+		$defineProperty({}, 'a', { value: 1 });
+	} catch (e) {
+		// IE 8 has a broken defineProperty
+		$defineProperty = null;
+	}
+}
+
+module.exports = function callBind(originalFunction) {
+	var func = $reflectApply(bind, $call, arguments);
+	if ($gOPD && $defineProperty) {
+		var desc = $gOPD(func, 'length');
+		if (desc.configurable) {
+			// original length, plus the receiver, minus any additional arguments (after the receiver)
+			$defineProperty(
+				func,
+				'length',
+				{ value: 1 + $max(0, originalFunction.length - (arguments.length - 1)) }
+			);
+		}
+	}
+	return func;
+};
+
+var applyBind = function applyBind() {
+	return $reflectApply(bind, $apply, arguments);
+};
+
+if ($defineProperty) {
+	$defineProperty(module.exports, 'apply', { value: applyBind });
+} else {
+	module.exports.apply = applyBind;
+}
+
+},{"function-bind":21,"get-intrinsic":22}],16:[function(require,module,exports){
+'use strict';
+
+var GetIntrinsic = require('get-intrinsic');
+
+var $gOPD = GetIntrinsic('%Object.getOwnPropertyDescriptor%', true);
+if ($gOPD) {
+	try {
+		$gOPD([], 'length');
+	} catch (e) {
+		// IE 8 has a broken gOPD
+		$gOPD = null;
+	}
+}
+
+module.exports = $gOPD;
+
+},{"get-intrinsic":22}],17:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -2554,7 +4813,532 @@ function eventTargetAgnosticAddListener(emitter, name, listener, flags) {
   }
 }
 
-},{}],7:[function(require,module,exports){
+},{}],18:[function(require,module,exports){
+(function (process,__dirname){(function (){
+'use strict'
+
+if (process.env.FFMPEG_BIN) {
+  module.exports = process.env.FFMPEG_BIN
+} else {
+  var os = require('os')
+  var path = require('path')
+
+  var binaries = Object.assign(Object.create(null), {
+    darwin: ['x64', 'arm64'],
+    freebsd: ['x64'],
+    linux: ['x64', 'ia32', 'arm64', 'arm'],
+    win32: ['x64', 'ia32']
+  })
+
+  var platform = process.env.npm_config_platform || os.platform()
+  var arch = process.env.npm_config_arch || os.arch()
+
+  var ffmpegPath = path.join(
+    __dirname,
+    platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  )
+
+  if (!binaries[platform] || binaries[platform].indexOf(arch) === -1) {
+    ffmpegPath = null
+  }
+
+  module.exports = ffmpegPath
+}
+
+}).call(this)}).call(this,require('_process'),"/node_modules/ffmpeg-static")
+},{"_process":48,"os":35,"path":47}],19:[function(require,module,exports){
+
+var hasOwn = Object.prototype.hasOwnProperty;
+var toString = Object.prototype.toString;
+
+module.exports = function forEach (obj, fn, ctx) {
+    if (toString.call(fn) !== '[object Function]') {
+        throw new TypeError('iterator must be a function');
+    }
+    var l = obj.length;
+    if (l === +l) {
+        for (var i = 0; i < l; i++) {
+            fn.call(ctx, obj[i], i, obj);
+        }
+    } else {
+        for (var k in obj) {
+            if (hasOwn.call(obj, k)) {
+                fn.call(ctx, obj[k], k, obj);
+            }
+        }
+    }
+};
+
+
+},{}],20:[function(require,module,exports){
+'use strict';
+
+/* eslint no-invalid-this: 1 */
+
+var ERROR_MESSAGE = 'Function.prototype.bind called on incompatible ';
+var slice = Array.prototype.slice;
+var toStr = Object.prototype.toString;
+var funcType = '[object Function]';
+
+module.exports = function bind(that) {
+    var target = this;
+    if (typeof target !== 'function' || toStr.call(target) !== funcType) {
+        throw new TypeError(ERROR_MESSAGE + target);
+    }
+    var args = slice.call(arguments, 1);
+
+    var bound;
+    var binder = function () {
+        if (this instanceof bound) {
+            var result = target.apply(
+                this,
+                args.concat(slice.call(arguments))
+            );
+            if (Object(result) === result) {
+                return result;
+            }
+            return this;
+        } else {
+            return target.apply(
+                that,
+                args.concat(slice.call(arguments))
+            );
+        }
+    };
+
+    var boundLength = Math.max(0, target.length - args.length);
+    var boundArgs = [];
+    for (var i = 0; i < boundLength; i++) {
+        boundArgs.push('$' + i);
+    }
+
+    bound = Function('binder', 'return function (' + boundArgs.join(',') + '){ return binder.apply(this,arguments); }')(binder);
+
+    if (target.prototype) {
+        var Empty = function Empty() {};
+        Empty.prototype = target.prototype;
+        bound.prototype = new Empty();
+        Empty.prototype = null;
+    }
+
+    return bound;
+};
+
+},{}],21:[function(require,module,exports){
+'use strict';
+
+var implementation = require('./implementation');
+
+module.exports = Function.prototype.bind || implementation;
+
+},{"./implementation":20}],22:[function(require,module,exports){
+'use strict';
+
+var undefined;
+
+var $SyntaxError = SyntaxError;
+var $Function = Function;
+var $TypeError = TypeError;
+
+// eslint-disable-next-line consistent-return
+var getEvalledConstructor = function (expressionSyntax) {
+	try {
+		return $Function('"use strict"; return (' + expressionSyntax + ').constructor;')();
+	} catch (e) {}
+};
+
+var $gOPD = Object.getOwnPropertyDescriptor;
+if ($gOPD) {
+	try {
+		$gOPD({}, '');
+	} catch (e) {
+		$gOPD = null; // this is IE 8, which has a broken gOPD
+	}
+}
+
+var throwTypeError = function () {
+	throw new $TypeError();
+};
+var ThrowTypeError = $gOPD
+	? (function () {
+		try {
+			// eslint-disable-next-line no-unused-expressions, no-caller, no-restricted-properties
+			arguments.callee; // IE 8 does not throw here
+			return throwTypeError;
+		} catch (calleeThrows) {
+			try {
+				// IE 8 throws on Object.getOwnPropertyDescriptor(arguments, '')
+				return $gOPD(arguments, 'callee').get;
+			} catch (gOPDthrows) {
+				return throwTypeError;
+			}
+		}
+	}())
+	: throwTypeError;
+
+var hasSymbols = require('has-symbols')();
+
+var getProto = Object.getPrototypeOf || function (x) { return x.__proto__; }; // eslint-disable-line no-proto
+
+var needsEval = {};
+
+var TypedArray = typeof Uint8Array === 'undefined' ? undefined : getProto(Uint8Array);
+
+var INTRINSICS = {
+	'%AggregateError%': typeof AggregateError === 'undefined' ? undefined : AggregateError,
+	'%Array%': Array,
+	'%ArrayBuffer%': typeof ArrayBuffer === 'undefined' ? undefined : ArrayBuffer,
+	'%ArrayIteratorPrototype%': hasSymbols ? getProto([][Symbol.iterator]()) : undefined,
+	'%AsyncFromSyncIteratorPrototype%': undefined,
+	'%AsyncFunction%': needsEval,
+	'%AsyncGenerator%': needsEval,
+	'%AsyncGeneratorFunction%': needsEval,
+	'%AsyncIteratorPrototype%': needsEval,
+	'%Atomics%': typeof Atomics === 'undefined' ? undefined : Atomics,
+	'%BigInt%': typeof BigInt === 'undefined' ? undefined : BigInt,
+	'%Boolean%': Boolean,
+	'%DataView%': typeof DataView === 'undefined' ? undefined : DataView,
+	'%Date%': Date,
+	'%decodeURI%': decodeURI,
+	'%decodeURIComponent%': decodeURIComponent,
+	'%encodeURI%': encodeURI,
+	'%encodeURIComponent%': encodeURIComponent,
+	'%Error%': Error,
+	'%eval%': eval, // eslint-disable-line no-eval
+	'%EvalError%': EvalError,
+	'%Float32Array%': typeof Float32Array === 'undefined' ? undefined : Float32Array,
+	'%Float64Array%': typeof Float64Array === 'undefined' ? undefined : Float64Array,
+	'%FinalizationRegistry%': typeof FinalizationRegistry === 'undefined' ? undefined : FinalizationRegistry,
+	'%Function%': $Function,
+	'%GeneratorFunction%': needsEval,
+	'%Int8Array%': typeof Int8Array === 'undefined' ? undefined : Int8Array,
+	'%Int16Array%': typeof Int16Array === 'undefined' ? undefined : Int16Array,
+	'%Int32Array%': typeof Int32Array === 'undefined' ? undefined : Int32Array,
+	'%isFinite%': isFinite,
+	'%isNaN%': isNaN,
+	'%IteratorPrototype%': hasSymbols ? getProto(getProto([][Symbol.iterator]())) : undefined,
+	'%JSON%': typeof JSON === 'object' ? JSON : undefined,
+	'%Map%': typeof Map === 'undefined' ? undefined : Map,
+	'%MapIteratorPrototype%': typeof Map === 'undefined' || !hasSymbols ? undefined : getProto(new Map()[Symbol.iterator]()),
+	'%Math%': Math,
+	'%Number%': Number,
+	'%Object%': Object,
+	'%parseFloat%': parseFloat,
+	'%parseInt%': parseInt,
+	'%Promise%': typeof Promise === 'undefined' ? undefined : Promise,
+	'%Proxy%': typeof Proxy === 'undefined' ? undefined : Proxy,
+	'%RangeError%': RangeError,
+	'%ReferenceError%': ReferenceError,
+	'%Reflect%': typeof Reflect === 'undefined' ? undefined : Reflect,
+	'%RegExp%': RegExp,
+	'%Set%': typeof Set === 'undefined' ? undefined : Set,
+	'%SetIteratorPrototype%': typeof Set === 'undefined' || !hasSymbols ? undefined : getProto(new Set()[Symbol.iterator]()),
+	'%SharedArrayBuffer%': typeof SharedArrayBuffer === 'undefined' ? undefined : SharedArrayBuffer,
+	'%String%': String,
+	'%StringIteratorPrototype%': hasSymbols ? getProto(''[Symbol.iterator]()) : undefined,
+	'%Symbol%': hasSymbols ? Symbol : undefined,
+	'%SyntaxError%': $SyntaxError,
+	'%ThrowTypeError%': ThrowTypeError,
+	'%TypedArray%': TypedArray,
+	'%TypeError%': $TypeError,
+	'%Uint8Array%': typeof Uint8Array === 'undefined' ? undefined : Uint8Array,
+	'%Uint8ClampedArray%': typeof Uint8ClampedArray === 'undefined' ? undefined : Uint8ClampedArray,
+	'%Uint16Array%': typeof Uint16Array === 'undefined' ? undefined : Uint16Array,
+	'%Uint32Array%': typeof Uint32Array === 'undefined' ? undefined : Uint32Array,
+	'%URIError%': URIError,
+	'%WeakMap%': typeof WeakMap === 'undefined' ? undefined : WeakMap,
+	'%WeakRef%': typeof WeakRef === 'undefined' ? undefined : WeakRef,
+	'%WeakSet%': typeof WeakSet === 'undefined' ? undefined : WeakSet
+};
+
+var doEval = function doEval(name) {
+	var value;
+	if (name === '%AsyncFunction%') {
+		value = getEvalledConstructor('async function () {}');
+	} else if (name === '%GeneratorFunction%') {
+		value = getEvalledConstructor('function* () {}');
+	} else if (name === '%AsyncGeneratorFunction%') {
+		value = getEvalledConstructor('async function* () {}');
+	} else if (name === '%AsyncGenerator%') {
+		var fn = doEval('%AsyncGeneratorFunction%');
+		if (fn) {
+			value = fn.prototype;
+		}
+	} else if (name === '%AsyncIteratorPrototype%') {
+		var gen = doEval('%AsyncGenerator%');
+		if (gen) {
+			value = getProto(gen.prototype);
+		}
+	}
+
+	INTRINSICS[name] = value;
+
+	return value;
+};
+
+var LEGACY_ALIASES = {
+	'%ArrayBufferPrototype%': ['ArrayBuffer', 'prototype'],
+	'%ArrayPrototype%': ['Array', 'prototype'],
+	'%ArrayProto_entries%': ['Array', 'prototype', 'entries'],
+	'%ArrayProto_forEach%': ['Array', 'prototype', 'forEach'],
+	'%ArrayProto_keys%': ['Array', 'prototype', 'keys'],
+	'%ArrayProto_values%': ['Array', 'prototype', 'values'],
+	'%AsyncFunctionPrototype%': ['AsyncFunction', 'prototype'],
+	'%AsyncGenerator%': ['AsyncGeneratorFunction', 'prototype'],
+	'%AsyncGeneratorPrototype%': ['AsyncGeneratorFunction', 'prototype', 'prototype'],
+	'%BooleanPrototype%': ['Boolean', 'prototype'],
+	'%DataViewPrototype%': ['DataView', 'prototype'],
+	'%DatePrototype%': ['Date', 'prototype'],
+	'%ErrorPrototype%': ['Error', 'prototype'],
+	'%EvalErrorPrototype%': ['EvalError', 'prototype'],
+	'%Float32ArrayPrototype%': ['Float32Array', 'prototype'],
+	'%Float64ArrayPrototype%': ['Float64Array', 'prototype'],
+	'%FunctionPrototype%': ['Function', 'prototype'],
+	'%Generator%': ['GeneratorFunction', 'prototype'],
+	'%GeneratorPrototype%': ['GeneratorFunction', 'prototype', 'prototype'],
+	'%Int8ArrayPrototype%': ['Int8Array', 'prototype'],
+	'%Int16ArrayPrototype%': ['Int16Array', 'prototype'],
+	'%Int32ArrayPrototype%': ['Int32Array', 'prototype'],
+	'%JSONParse%': ['JSON', 'parse'],
+	'%JSONStringify%': ['JSON', 'stringify'],
+	'%MapPrototype%': ['Map', 'prototype'],
+	'%NumberPrototype%': ['Number', 'prototype'],
+	'%ObjectPrototype%': ['Object', 'prototype'],
+	'%ObjProto_toString%': ['Object', 'prototype', 'toString'],
+	'%ObjProto_valueOf%': ['Object', 'prototype', 'valueOf'],
+	'%PromisePrototype%': ['Promise', 'prototype'],
+	'%PromiseProto_then%': ['Promise', 'prototype', 'then'],
+	'%Promise_all%': ['Promise', 'all'],
+	'%Promise_reject%': ['Promise', 'reject'],
+	'%Promise_resolve%': ['Promise', 'resolve'],
+	'%RangeErrorPrototype%': ['RangeError', 'prototype'],
+	'%ReferenceErrorPrototype%': ['ReferenceError', 'prototype'],
+	'%RegExpPrototype%': ['RegExp', 'prototype'],
+	'%SetPrototype%': ['Set', 'prototype'],
+	'%SharedArrayBufferPrototype%': ['SharedArrayBuffer', 'prototype'],
+	'%StringPrototype%': ['String', 'prototype'],
+	'%SymbolPrototype%': ['Symbol', 'prototype'],
+	'%SyntaxErrorPrototype%': ['SyntaxError', 'prototype'],
+	'%TypedArrayPrototype%': ['TypedArray', 'prototype'],
+	'%TypeErrorPrototype%': ['TypeError', 'prototype'],
+	'%Uint8ArrayPrototype%': ['Uint8Array', 'prototype'],
+	'%Uint8ClampedArrayPrototype%': ['Uint8ClampedArray', 'prototype'],
+	'%Uint16ArrayPrototype%': ['Uint16Array', 'prototype'],
+	'%Uint32ArrayPrototype%': ['Uint32Array', 'prototype'],
+	'%URIErrorPrototype%': ['URIError', 'prototype'],
+	'%WeakMapPrototype%': ['WeakMap', 'prototype'],
+	'%WeakSetPrototype%': ['WeakSet', 'prototype']
+};
+
+var bind = require('function-bind');
+var hasOwn = require('has');
+var $concat = bind.call(Function.call, Array.prototype.concat);
+var $spliceApply = bind.call(Function.apply, Array.prototype.splice);
+var $replace = bind.call(Function.call, String.prototype.replace);
+var $strSlice = bind.call(Function.call, String.prototype.slice);
+
+/* adapted from https://github.com/lodash/lodash/blob/4.17.15/dist/lodash.js#L6735-L6744 */
+var rePropName = /[^%.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|%$))/g;
+var reEscapeChar = /\\(\\)?/g; /** Used to match backslashes in property paths. */
+var stringToPath = function stringToPath(string) {
+	var first = $strSlice(string, 0, 1);
+	var last = $strSlice(string, -1);
+	if (first === '%' && last !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected closing `%`');
+	} else if (last === '%' && first !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected opening `%`');
+	}
+	var result = [];
+	$replace(string, rePropName, function (match, number, quote, subString) {
+		result[result.length] = quote ? $replace(subString, reEscapeChar, '$1') : number || match;
+	});
+	return result;
+};
+/* end adaptation */
+
+var getBaseIntrinsic = function getBaseIntrinsic(name, allowMissing) {
+	var intrinsicName = name;
+	var alias;
+	if (hasOwn(LEGACY_ALIASES, intrinsicName)) {
+		alias = LEGACY_ALIASES[intrinsicName];
+		intrinsicName = '%' + alias[0] + '%';
+	}
+
+	if (hasOwn(INTRINSICS, intrinsicName)) {
+		var value = INTRINSICS[intrinsicName];
+		if (value === needsEval) {
+			value = doEval(intrinsicName);
+		}
+		if (typeof value === 'undefined' && !allowMissing) {
+			throw new $TypeError('intrinsic ' + name + ' exists, but is not available. Please file an issue!');
+		}
+
+		return {
+			alias: alias,
+			name: intrinsicName,
+			value: value
+		};
+	}
+
+	throw new $SyntaxError('intrinsic ' + name + ' does not exist!');
+};
+
+module.exports = function GetIntrinsic(name, allowMissing) {
+	if (typeof name !== 'string' || name.length === 0) {
+		throw new $TypeError('intrinsic name must be a non-empty string');
+	}
+	if (arguments.length > 1 && typeof allowMissing !== 'boolean') {
+		throw new $TypeError('"allowMissing" argument must be a boolean');
+	}
+
+	var parts = stringToPath(name);
+	var intrinsicBaseName = parts.length > 0 ? parts[0] : '';
+
+	var intrinsic = getBaseIntrinsic('%' + intrinsicBaseName + '%', allowMissing);
+	var intrinsicRealName = intrinsic.name;
+	var value = intrinsic.value;
+	var skipFurtherCaching = false;
+
+	var alias = intrinsic.alias;
+	if (alias) {
+		intrinsicBaseName = alias[0];
+		$spliceApply(parts, $concat([0, 1], alias));
+	}
+
+	for (var i = 1, isOwn = true; i < parts.length; i += 1) {
+		var part = parts[i];
+		var first = $strSlice(part, 0, 1);
+		var last = $strSlice(part, -1);
+		if (
+			(
+				(first === '"' || first === "'" || first === '`')
+				|| (last === '"' || last === "'" || last === '`')
+			)
+			&& first !== last
+		) {
+			throw new $SyntaxError('property names with quotes must have matching quotes');
+		}
+		if (part === 'constructor' || !isOwn) {
+			skipFurtherCaching = true;
+		}
+
+		intrinsicBaseName += '.' + part;
+		intrinsicRealName = '%' + intrinsicBaseName + '%';
+
+		if (hasOwn(INTRINSICS, intrinsicRealName)) {
+			value = INTRINSICS[intrinsicRealName];
+		} else if (value != null) {
+			if (!(part in value)) {
+				if (!allowMissing) {
+					throw new $TypeError('base intrinsic for ' + name + ' exists, but the property is not available.');
+				}
+				return void undefined;
+			}
+			if ($gOPD && (i + 1) >= parts.length) {
+				var desc = $gOPD(value, part);
+				isOwn = !!desc;
+
+				// By convention, when a data property is converted to an accessor
+				// property to emulate a data property that does not suffer from
+				// the override mistake, that accessor's getter is marked with
+				// an `originalValue` property. Here, when we detect this, we
+				// uphold the illusion by pretending to see that original data
+				// property, i.e., returning the value rather than the getter
+				// itself.
+				if (isOwn && 'get' in desc && !('originalValue' in desc.get)) {
+					value = desc.get;
+				} else {
+					value = value[part];
+				}
+			} else {
+				isOwn = hasOwn(value, part);
+				value = value[part];
+			}
+
+			if (isOwn && !skipFurtherCaching) {
+				INTRINSICS[intrinsicRealName] = value;
+			}
+		}
+	}
+	return value;
+};
+
+},{"function-bind":21,"has":26,"has-symbols":23}],23:[function(require,module,exports){
+'use strict';
+
+var origSymbol = typeof Symbol !== 'undefined' && Symbol;
+var hasSymbolSham = require('./shams');
+
+module.exports = function hasNativeSymbols() {
+	if (typeof origSymbol !== 'function') { return false; }
+	if (typeof Symbol !== 'function') { return false; }
+	if (typeof origSymbol('foo') !== 'symbol') { return false; }
+	if (typeof Symbol('bar') !== 'symbol') { return false; }
+
+	return hasSymbolSham();
+};
+
+},{"./shams":24}],24:[function(require,module,exports){
+'use strict';
+
+/* eslint complexity: [2, 18], max-statements: [2, 33] */
+module.exports = function hasSymbols() {
+	if (typeof Symbol !== 'function' || typeof Object.getOwnPropertySymbols !== 'function') { return false; }
+	if (typeof Symbol.iterator === 'symbol') { return true; }
+
+	var obj = {};
+	var sym = Symbol('test');
+	var symObj = Object(sym);
+	if (typeof sym === 'string') { return false; }
+
+	if (Object.prototype.toString.call(sym) !== '[object Symbol]') { return false; }
+	if (Object.prototype.toString.call(symObj) !== '[object Symbol]') { return false; }
+
+	// temp disabled per https://github.com/ljharb/object.assign/issues/17
+	// if (sym instanceof Symbol) { return false; }
+	// temp disabled per https://github.com/WebReflection/get-own-property-symbols/issues/4
+	// if (!(symObj instanceof Symbol)) { return false; }
+
+	// if (typeof Symbol.prototype.toString !== 'function') { return false; }
+	// if (String(sym) !== Symbol.prototype.toString.call(sym)) { return false; }
+
+	var symVal = 42;
+	obj[sym] = symVal;
+	for (sym in obj) { return false; } // eslint-disable-line no-restricted-syntax, no-unreachable-loop
+	if (typeof Object.keys === 'function' && Object.keys(obj).length !== 0) { return false; }
+
+	if (typeof Object.getOwnPropertyNames === 'function' && Object.getOwnPropertyNames(obj).length !== 0) { return false; }
+
+	var syms = Object.getOwnPropertySymbols(obj);
+	if (syms.length !== 1 || syms[0] !== sym) { return false; }
+
+	if (!Object.prototype.propertyIsEnumerable.call(obj, sym)) { return false; }
+
+	if (typeof Object.getOwnPropertyDescriptor === 'function') {
+		var descriptor = Object.getOwnPropertyDescriptor(obj, sym);
+		if (descriptor.value !== symVal || descriptor.enumerable !== true) { return false; }
+	}
+
+	return true;
+};
+
+},{}],25:[function(require,module,exports){
+'use strict';
+
+var hasSymbols = require('has-symbols/shams');
+
+module.exports = function hasToStringTagShams() {
+	return hasSymbols() && !!Symbol.toStringTag;
+};
+
+},{"has-symbols/shams":24}],26:[function(require,module,exports){
+'use strict';
+
+var bind = require('function-bind');
+
+module.exports = bind.call(Function.call, Object.prototype.hasOwnProperty);
+
+},{"function-bind":21}],27:[function(require,module,exports){
 var http = require('http')
 var url = require('url')
 
@@ -2587,7 +5371,7 @@ function validateParams (params) {
   return params
 }
 
-},{"http":38,"url":60}],8:[function(require,module,exports){
+},{"http":70,"url":92}],28:[function(require,module,exports){
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
@@ -2674,7 +5458,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],9:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -2703,605 +5487,146 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],10:[function(require,module,exports){
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
+},{}],30:[function(require,module,exports){
+'use strict';
+
+var hasToStringTag = require('has-tostringtag/shams')();
+var callBound = require('call-bind/callBound');
+
+var $toString = callBound('Object.prototype.toString');
+
+var isStandardArguments = function isArguments(value) {
+	if (hasToStringTag && value && typeof value === 'object' && Symbol.toStringTag in value) {
+		return false;
+	}
+	return $toString(value) === '[object Arguments]';
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-const stream_1 = require("stream");
-const sax_1 = __importDefault(require("sax"));
-const parse_time_1 = require("./parse-time");
-/**
- * A wrapper around sax that emits segments.
- */
-class DashMPDParser extends stream_1.Writable {
-    constructor(targetID) {
-        super();
-        this._parser = sax_1.default.createStream(false, { lowercase: true });
-        this._parser.on('error', this.destroy.bind(this));
-        let lastTag;
-        let currtime = 0;
-        let seq = 0;
-        let segmentTemplate;
-        let timescale, offset, duration, baseURL;
-        let timeline = [];
-        let getSegments = false;
-        let gotSegments = false;
-        let isStatic;
-        let treeLevel;
-        let periodStart;
-        const tmpl = (str) => {
-            const context = {
-                RepresentationID: targetID,
-                Number: seq,
-                Time: currtime,
-            };
-            return str.replace(/\$(\w+)\$/g, (m, p1) => `${context[p1]}`);
-        };
-        this._parser.on('opentag', node => {
-            switch (node.name) {
-                case 'mpd':
-                    currtime =
-                        node.attributes.availabilitystarttime ?
-                            new Date(node.attributes.availabilitystarttime).getTime() : 0;
-                    isStatic = node.attributes.type !== 'dynamic';
-                    break;
-                case 'period':
-                    // Reset everything on <Period> tag.
-                    seq = 0;
-                    timescale = 1000;
-                    duration = 0;
-                    offset = 0;
-                    baseURL = [];
-                    treeLevel = 0;
-                    periodStart = parse_time_1.durationStr(node.attributes.start) || 0;
-                    break;
-                case 'segmentlist':
-                    seq = parseInt(node.attributes.startnumber) || seq;
-                    timescale = parseInt(node.attributes.timescale) || timescale;
-                    duration = parseInt(node.attributes.duration) || duration;
-                    offset = parseInt(node.attributes.presentationtimeoffset) || offset;
-                    break;
-                case 'segmenttemplate':
-                    segmentTemplate = node.attributes;
-                    seq = parseInt(node.attributes.startnumber) || seq;
-                    timescale = parseInt(node.attributes.timescale) || timescale;
-                    break;
-                case 'segmenttimeline':
-                case 'baseurl':
-                    lastTag = node.name;
-                    break;
-                case 's':
-                    timeline.push({
-                        duration: parseInt(node.attributes.d),
-                        repeat: parseInt(node.attributes.r),
-                        time: parseInt(node.attributes.t),
-                    });
-                    break;
-                case 'adaptationset':
-                case 'representation':
-                    treeLevel++;
-                    if (!targetID) {
-                        targetID = node.attributes.id;
-                    }
-                    getSegments = node.attributes.id === `${targetID}`;
-                    if (getSegments) {
-                        if (periodStart) {
-                            currtime += periodStart;
-                        }
-                        if (offset) {
-                            currtime -= offset / timescale * 1000;
-                        }
-                        this.emit('starttime', currtime);
-                    }
-                    break;
-                case 'initialization':
-                    if (getSegments) {
-                        this.emit('item', {
-                            url: baseURL.filter(s => !!s).join('') + node.attributes.sourceurl,
-                            seq: seq,
-                            init: true,
-                            duration: 0,
-                        });
-                    }
-                    break;
-                case 'segmenturl':
-                    if (getSegments) {
-                        gotSegments = true;
-                        let tl = timeline.shift();
-                        let segmentDuration = ((tl === null || tl === void 0 ? void 0 : tl.duration) || duration) / timescale * 1000;
-                        this.emit('item', {
-                            url: baseURL.filter(s => !!s).join('') + node.attributes.media,
-                            seq: seq++,
-                            duration: segmentDuration,
-                        });
-                        currtime += segmentDuration;
-                    }
-                    break;
-            }
-        });
-        const onEnd = () => {
-            if (isStatic) {
-                this.emit('endlist');
-            }
-            if (!getSegments) {
-                this.destroy(Error(`Representation '${targetID}' not found`));
-            }
-            else {
-                this.emit('end');
-            }
-        };
-        this._parser.on('closetag', tagName => {
-            switch (tagName) {
-                case 'adaptationset':
-                case 'representation':
-                    treeLevel--;
-                    if (segmentTemplate && timeline.length) {
-                        gotSegments = true;
-                        if (segmentTemplate.initialization) {
-                            this.emit('item', {
-                                url: baseURL.filter(s => !!s).join('') +
-                                    tmpl(segmentTemplate.initialization),
-                                seq: seq,
-                                init: true,
-                                duration: 0,
-                            });
-                        }
-                        for (let { duration: itemDuration, repeat, time } of timeline) {
-                            itemDuration = itemDuration / timescale * 1000;
-                            repeat = repeat || 1;
-                            currtime = time || currtime;
-                            for (let i = 0; i < repeat; i++) {
-                                this.emit('item', {
-                                    url: baseURL.filter(s => !!s).join('') +
-                                        tmpl(segmentTemplate.media),
-                                    seq: seq++,
-                                    duration: itemDuration,
-                                });
-                                currtime += itemDuration;
-                            }
-                        }
-                    }
-                    if (gotSegments) {
-                        this.emit('endearly');
-                        onEnd();
-                        this._parser.removeAllListeners();
-                        this.removeAllListeners('finish');
-                    }
-                    break;
-            }
-        });
-        this._parser.on('text', text => {
-            if (lastTag === 'baseurl') {
-                baseURL[treeLevel] = text;
-                lastTag = null;
-            }
-        });
-        this.on('finish', onEnd);
-    }
-    _write(chunk, encoding, callback) {
-        this._parser.write(chunk, encoding);
-        callback();
-    }
+
+var isLegacyArguments = function isArguments(value) {
+	if (isStandardArguments(value)) {
+		return true;
+	}
+	return value !== null &&
+		typeof value === 'object' &&
+		typeof value.length === 'number' &&
+		value.length >= 0 &&
+		$toString(value) !== '[object Array]' &&
+		$toString(value.callee) === '[object Function]';
+};
+
+var supportsStandardArguments = (function () {
+	return isStandardArguments(arguments);
+}());
+
+isStandardArguments.isLegacyArguments = isLegacyArguments; // for tests
+
+module.exports = supportsStandardArguments ? isStandardArguments : isLegacyArguments;
+
+},{"call-bind/callBound":14,"has-tostringtag/shams":25}],31:[function(require,module,exports){
+'use strict';
+
+var toStr = Object.prototype.toString;
+var fnToStr = Function.prototype.toString;
+var isFnRegex = /^\s*(?:function)?\*/;
+var hasToStringTag = require('has-tostringtag/shams')();
+var getProto = Object.getPrototypeOf;
+var getGeneratorFunc = function () { // eslint-disable-line consistent-return
+	if (!hasToStringTag) {
+		return false;
+	}
+	try {
+		return Function('return function*() {}')();
+	} catch (e) {
+	}
+};
+var GeneratorFunction;
+
+module.exports = function isGeneratorFunction(fn) {
+	if (typeof fn !== 'function') {
+		return false;
+	}
+	if (isFnRegex.test(fnToStr.call(fn))) {
+		return true;
+	}
+	if (!hasToStringTag) {
+		var str = toStr.call(fn);
+		return str === '[object GeneratorFunction]';
+	}
+	if (!getProto) {
+		return false;
+	}
+	if (typeof GeneratorFunction === 'undefined') {
+		var generatorFunc = getGeneratorFunc();
+		GeneratorFunction = generatorFunc ? getProto(generatorFunc) : false;
+	}
+	return getProto(fn) === GeneratorFunction;
+};
+
+},{"has-tostringtag/shams":25}],32:[function(require,module,exports){
+(function (global){(function (){
+'use strict';
+
+var forEach = require('foreach');
+var availableTypedArrays = require('available-typed-arrays');
+var callBound = require('call-bind/callBound');
+
+var $toString = callBound('Object.prototype.toString');
+var hasToStringTag = require('has-tostringtag/shams')();
+
+var g = typeof globalThis === 'undefined' ? global : globalThis;
+var typedArrays = availableTypedArrays();
+
+var $indexOf = callBound('Array.prototype.indexOf', true) || function indexOf(array, value) {
+	for (var i = 0; i < array.length; i += 1) {
+		if (array[i] === value) {
+			return i;
+		}
+	}
+	return -1;
+};
+var $slice = callBound('String.prototype.slice');
+var toStrTags = {};
+var gOPD = require('es-abstract/helpers/getOwnPropertyDescriptor');
+var getPrototypeOf = Object.getPrototypeOf; // require('getprototypeof');
+if (hasToStringTag && gOPD && getPrototypeOf) {
+	forEach(typedArrays, function (typedArray) {
+		var arr = new g[typedArray]();
+		if (Symbol.toStringTag in arr) {
+			var proto = getPrototypeOf(arr);
+			var descriptor = gOPD(proto, Symbol.toStringTag);
+			if (!descriptor) {
+				var superProto = getPrototypeOf(proto);
+				descriptor = gOPD(superProto, Symbol.toStringTag);
+			}
+			toStrTags[typedArray] = descriptor.get;
+		}
+	});
 }
-exports.default = DashMPDParser;
 
-},{"./parse-time":13,"sax":22,"stream":23}],11:[function(require,module,exports){
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-const stream_1 = require("stream");
-const miniget_1 = __importDefault(require("miniget"));
-const m3u8_parser_1 = __importDefault(require("./m3u8-parser"));
-const dash_mpd_parser_1 = __importDefault(require("./dash-mpd-parser"));
-const queue_1 = require("./queue");
-const parse_time_1 = require("./parse-time");
-const supportedParsers = {
-    m3u8: m3u8_parser_1.default,
-    'dash-mpd': dash_mpd_parser_1.default,
-};
-let m3u8stream = ((playlistURL, options = {}) => {
-    const stream = new stream_1.PassThrough();
-    const chunkReadahead = options.chunkReadahead || 3;
-    // 20 seconds.
-    const liveBuffer = options.liveBuffer || 20000;
-    const requestOptions = options.requestOptions;
-    const Parser = supportedParsers[options.parser || (/\.mpd$/.test(playlistURL) ? 'dash-mpd' : 'm3u8')];
-    if (!Parser) {
-        throw TypeError(`parser '${options.parser}' not supported`);
-    }
-    let begin = 0;
-    if (typeof options.begin !== 'undefined') {
-        begin = typeof options.begin === 'string' ?
-            parse_time_1.humanStr(options.begin) :
-            Math.max(options.begin - liveBuffer, 0);
-    }
-    const forwardEvents = (req) => {
-        for (let event of ['abort', 'request', 'response', 'redirect', 'retry', 'reconnect']) {
-            req.on(event, stream.emit.bind(stream, event));
-        }
-    };
-    let currSegment;
-    const streamQueue = new queue_1.Queue((req, callback) => {
-        currSegment = req;
-        // Count the size manually, since the `content-length` header is not
-        // always there.
-        let size = 0;
-        req.on('data', (chunk) => size += chunk.length);
-        req.pipe(stream, { end: false });
-        req.on('end', () => callback(null, size));
-    }, { concurrency: 1 });
-    let segmentNumber = 0;
-    let downloaded = 0;
-    const requestQueue = new queue_1.Queue((segment, callback) => {
-        let reqOptions = Object.assign({}, requestOptions);
-        if (segment.range) {
-            reqOptions.headers = Object.assign({}, reqOptions.headers, {
-                Range: `bytes=${segment.range.start}-${segment.range.end}`,
-            });
-        }
-        let req = miniget_1.default(new URL(segment.url, playlistURL).toString(), reqOptions);
-        req.on('error', callback);
-        forwardEvents(req);
-        streamQueue.push(req, (_, size) => {
-            downloaded += +size;
-            stream.emit('progress', {
-                num: ++segmentNumber,
-                size: size,
-                duration: segment.duration,
-                url: segment.url,
-            }, requestQueue.total, downloaded);
-            callback(null);
-        });
-    }, { concurrency: chunkReadahead });
-    const onError = (err) => {
-        if (ended) {
-            return;
-        }
-        stream.emit('error', err);
-        // Stop on any error.
-        stream.end();
-    };
-    // When to look for items again.
-    let refreshThreshold;
-    let minRefreshTime;
-    let refreshTimeout;
-    let fetchingPlaylist = true;
-    let ended = false;
-    let isStatic = false;
-    let lastRefresh;
-    const onQueuedEnd = (err) => {
-        currSegment = null;
-        if (err) {
-            onError(err);
-        }
-        else if (!fetchingPlaylist && !ended && !isStatic &&
-            requestQueue.tasks.length + requestQueue.active <= refreshThreshold) {
-            let ms = Math.max(0, minRefreshTime - (Date.now() - lastRefresh));
-            fetchingPlaylist = true;
-            refreshTimeout = setTimeout(refreshPlaylist, ms);
-        }
-        else if ((ended || isStatic) &&
-            !requestQueue.tasks.length && !requestQueue.active) {
-            stream.end();
-        }
-    };
-    let currPlaylist;
-    let lastSeq;
-    let starttime = 0;
-    const refreshPlaylist = () => {
-        lastRefresh = Date.now();
-        currPlaylist = miniget_1.default(playlistURL, requestOptions);
-        currPlaylist.on('error', onError);
-        forwardEvents(currPlaylist);
-        const parser = currPlaylist.pipe(new Parser(options.id));
-        parser.on('starttime', (a) => {
-            if (starttime) {
-                return;
-            }
-            starttime = a;
-            if (typeof options.begin === 'string' && begin >= 0) {
-                begin += starttime;
-            }
-        });
-        parser.on('endlist', () => { isStatic = true; });
-        parser.on('endearly', currPlaylist.unpipe.bind(currPlaylist, parser));
-        let addedItems = [];
-        const addItem = (item) => {
-            if (!item.init) {
-                if (item.seq <= lastSeq) {
-                    return;
-                }
-                lastSeq = item.seq;
-            }
-            begin = item.time;
-            requestQueue.push(item, onQueuedEnd);
-            addedItems.push(item);
-        };
-        let tailedItems = [], tailedItemsDuration = 0;
-        parser.on('item', (item) => {
-            let timedItem = Object.assign({ time: starttime }, item);
-            if (begin <= timedItem.time) {
-                addItem(timedItem);
-            }
-            else {
-                tailedItems.push(timedItem);
-                tailedItemsDuration += timedItem.duration;
-                // Only keep the last `liveBuffer` of items.
-                while (tailedItems.length > 1 &&
-                    tailedItemsDuration - tailedItems[0].duration > liveBuffer) {
-                    const lastItem = tailedItems.shift();
-                    tailedItemsDuration -= lastItem.duration;
-                }
-            }
-            starttime += timedItem.duration;
-        });
-        parser.on('end', () => {
-            currPlaylist = null;
-            // If we are too ahead of the stream, make sure to get the
-            // latest available items with a small buffer.
-            if (!addedItems.length && tailedItems.length) {
-                tailedItems.forEach(item => { addItem(item); });
-            }
-            // Refresh the playlist when remaining segments get low.
-            refreshThreshold = Math.max(1, Math.ceil(addedItems.length * 0.01));
-            // Throttle refreshing the playlist by looking at the duration
-            // of live items added on this refresh.
-            minRefreshTime =
-                addedItems.reduce((total, item) => item.duration + total, 0);
-            fetchingPlaylist = false;
-            onQueuedEnd(null);
-        });
-    };
-    refreshPlaylist();
-    stream.end = () => {
-        ended = true;
-        streamQueue.die();
-        requestQueue.die();
-        clearTimeout(refreshTimeout);
-        currPlaylist === null || currPlaylist === void 0 ? void 0 : currPlaylist.destroy();
-        currSegment === null || currSegment === void 0 ? void 0 : currSegment.destroy();
-        stream_1.PassThrough.prototype.end.call(stream, null);
-    };
-    return stream;
-});
-m3u8stream.parseTimestamp = parse_time_1.humanStr;
-module.exports = m3u8stream;
-
-},{"./dash-mpd-parser":10,"./m3u8-parser":12,"./parse-time":13,"./queue":14,"miniget":15,"stream":23}],12:[function(require,module,exports){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-const stream_1 = require("stream");
-/**
- * A very simple m3u8 playlist file parser that detects tags and segments.
- */
-class m3u8Parser extends stream_1.Writable {
-    constructor() {
-        super();
-        this._lastLine = '';
-        this._seq = 0;
-        this._nextItemDuration = null;
-        this._nextItemRange = null;
-        this._lastItemRangeEnd = 0;
-        this.on('finish', () => {
-            this._parseLine(this._lastLine);
-            this.emit('end');
-        });
-    }
-    _parseAttrList(value) {
-        let attrs = {};
-        let regex = /([A-Z0-9-]+)=(?:"([^"]*?)"|([^,]*?))/g;
-        let match;
-        while ((match = regex.exec(value)) !== null) {
-            attrs[match[1]] = match[2] || match[3];
-        }
-        return attrs;
-    }
-    _parseRange(value) {
-        if (!value)
-            return null;
-        let svalue = value.split('@');
-        let start = svalue[1] ? parseInt(svalue[1]) : this._lastItemRangeEnd + 1;
-        let end = start + parseInt(svalue[0]) - 1;
-        let range = { start, end };
-        this._lastItemRangeEnd = range.end;
-        return range;
-    }
-    _parseLine(line) {
-        let match = line.match(/^#(EXT[A-Z0-9-]+)(?::(.*))?/);
-        if (match) {
-            // This is a tag.
-            const tag = match[1];
-            const value = match[2] || '';
-            switch (tag) {
-                case 'EXT-X-PROGRAM-DATE-TIME':
-                    this.emit('starttime', new Date(value).getTime());
-                    break;
-                case 'EXT-X-MEDIA-SEQUENCE':
-                    this._seq = parseInt(value);
-                    break;
-                case 'EXT-X-MAP': {
-                    let attrs = this._parseAttrList(value);
-                    if (!attrs.URI) {
-                        this.destroy(new Error('`EXT-X-MAP` found without required attribute `URI`'));
-                        return;
-                    }
-                    this.emit('item', {
-                        url: attrs.URI,
-                        seq: this._seq,
-                        init: true,
-                        duration: 0,
-                        range: this._parseRange(attrs.BYTERANGE),
-                    });
-                    break;
-                }
-                case 'EXT-X-BYTERANGE': {
-                    this._nextItemRange = this._parseRange(value);
-                    break;
-                }
-                case 'EXTINF':
-                    this._nextItemDuration =
-                        Math.round(parseFloat(value.split(',')[0]) * 1000);
-                    break;
-                case 'EXT-X-ENDLIST':
-                    this.emit('endlist');
-                    break;
-            }
-        }
-        else if (!/^#/.test(line) && line.trim()) {
-            // This is a segment
-            this.emit('item', {
-                url: line.trim(),
-                seq: this._seq++,
-                duration: this._nextItemDuration,
-                range: this._nextItemRange,
-            });
-            this._nextItemRange = null;
-        }
-    }
-    _write(chunk, encoding, callback) {
-        let lines = chunk.toString('utf8').split('\n');
-        if (this._lastLine) {
-            lines[0] = this._lastLine + lines[0];
-        }
-        lines.forEach((line, i) => {
-            if (this.destroyed)
-                return;
-            if (i < lines.length - 1) {
-                this._parseLine(line);
-            }
-            else {
-                // Save the last line in case it has been broken up.
-                this._lastLine = line;
-            }
-        });
-        callback();
-    }
-}
-exports.default = m3u8Parser;
-
-},{"stream":23}],13:[function(require,module,exports){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.durationStr = exports.humanStr = void 0;
-const numberFormat = /^\d+$/;
-const timeFormat = /^(?:(?:(\d+):)?(\d{1,2}):)?(\d{1,2})(?:\.(\d{3}))?$/;
-const timeUnits = {
-    ms: 1,
-    s: 1000,
-    m: 60000,
-    h: 3600000,
-};
-/**
- * Converts human friendly time to milliseconds. Supports the format
- * 00:00:00.000 for hours, minutes, seconds, and milliseconds respectively.
- * And 0ms, 0s, 0m, 0h, and together 1m1s.
- *
- * @param {number|string} time
- * @returns {number}
- */
-exports.humanStr = (time) => {
-    if (typeof time === 'number') {
-        return time;
-    }
-    if (numberFormat.test(time)) {
-        return +time;
-    }
-    const firstFormat = timeFormat.exec(time);
-    if (firstFormat) {
-        return (+(firstFormat[1] || 0) * timeUnits.h) +
-            (+(firstFormat[2] || 0) * timeUnits.m) +
-            (+firstFormat[3] * timeUnits.s) +
-            +(firstFormat[4] || 0);
-    }
-    else {
-        let total = 0;
-        const r = /(-?\d+)(ms|s|m|h)/g;
-        let rs;
-        while ((rs = r.exec(time)) !== null) {
-            total += +rs[1] * timeUnits[rs[2]];
-        }
-        return total;
-    }
-};
-/**
- * Parses a duration string in the form of "123.456S", returns milliseconds.
- *
- * @param {string} time
- * @returns {number}
- */
-exports.durationStr = (time) => {
-    let total = 0;
-    const r = /(\d+(?:\.\d+)?)(S|M|H)/g;
-    let rs;
-    while ((rs = r.exec(time)) !== null) {
-        total += +rs[1] * timeUnits[rs[2].toLowerCase()];
-    }
-    return total;
+var tryTypedArrays = function tryAllTypedArrays(value) {
+	var anyTrue = false;
+	forEach(toStrTags, function (getter, typedArray) {
+		if (!anyTrue) {
+			try {
+				anyTrue = getter.call(value) === typedArray;
+			} catch (e) { /**/ }
+		}
+	});
+	return anyTrue;
 };
 
-},{}],14:[function(require,module,exports){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Queue = void 0;
-class Queue {
-    /**
-     * A really simple queue with concurrency.
-     *
-     * @param {Function} worker
-     * @param {Object} options
-     * @param {!number} options.concurrency
-     */
-    constructor(worker, options = {}) {
-        this._worker = worker;
-        this._concurrency = options.concurrency || 1;
-        this.tasks = [];
-        this.total = 0;
-        this.active = 0;
-    }
-    /**
-     * Push a task to the queue.
-     *
-     *  @param {T} item
-     *  @param {!Function} callback
-     */
-    push(item, callback) {
-        this.tasks.push({ item, callback });
-        this.total++;
-        this._next();
-    }
-    /**
-     * Process next job in queue.
-     */
-    _next() {
-        if (this.active >= this._concurrency || !this.tasks.length) {
-            return;
-        }
-        const { item, callback } = this.tasks.shift();
-        let callbackCalled = false;
-        this.active++;
-        this._worker(item, (err, result) => {
-            if (callbackCalled) {
-                return;
-            }
-            this.active--;
-            callbackCalled = true;
-            callback === null || callback === void 0 ? void 0 : callback(err, result);
-            this._next();
-        });
-    }
-    /**
-     * Stops processing queued jobs.
-     */
-    die() {
-        this.tasks = [];
-    }
-}
-exports.Queue = Queue;
+module.exports = function isTypedArray(value) {
+	if (!value || typeof value !== 'object') { return false; }
+	if (!hasToStringTag || !(Symbol.toStringTag in value)) {
+		var tag = $slice($toString(value), 8, -1);
+		return $indexOf(typedArrays, tag) > -1;
+	}
+	if (!gOPD) { return false; }
+	return tryTypedArrays(value);
+};
 
-},{}],15:[function(require,module,exports){
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"available-typed-arrays":6,"call-bind/callBound":14,"es-abstract/helpers/getOwnPropertyDescriptor":16,"foreach":19,"has-tostringtag/shams":25}],33:[function(require,module,exports){
 (function (process){(function (){
 "use strict";
 var __importDefault = (this && this.__importDefault) || function (mod) {
@@ -3589,7 +5914,6407 @@ function Miniget(url, options = {}) {
 module.exports = Miniget;
 
 }).call(this)}).call(this,require('_process'))
-},{"_process":16,"http":38,"https":7,"stream":23}],16:[function(require,module,exports){
+},{"_process":48,"http":70,"https":27,"stream":55}],34:[function(require,module,exports){
+/*
+object-assign
+(c) Sindre Sorhus
+@license MIT
+*/
+
+'use strict';
+/* eslint-disable no-unused-vars */
+var getOwnPropertySymbols = Object.getOwnPropertySymbols;
+var hasOwnProperty = Object.prototype.hasOwnProperty;
+var propIsEnumerable = Object.prototype.propertyIsEnumerable;
+
+function toObject(val) {
+	if (val === null || val === undefined) {
+		throw new TypeError('Object.assign cannot be called with null or undefined');
+	}
+
+	return Object(val);
+}
+
+function shouldUseNative() {
+	try {
+		if (!Object.assign) {
+			return false;
+		}
+
+		// Detect buggy property enumeration order in older V8 versions.
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=4118
+		var test1 = new String('abc');  // eslint-disable-line no-new-wrappers
+		test1[5] = 'de';
+		if (Object.getOwnPropertyNames(test1)[0] === '5') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test2 = {};
+		for (var i = 0; i < 10; i++) {
+			test2['_' + String.fromCharCode(i)] = i;
+		}
+		var order2 = Object.getOwnPropertyNames(test2).map(function (n) {
+			return test2[n];
+		});
+		if (order2.join('') !== '0123456789') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test3 = {};
+		'abcdefghijklmnopqrst'.split('').forEach(function (letter) {
+			test3[letter] = letter;
+		});
+		if (Object.keys(Object.assign({}, test3)).join('') !==
+				'abcdefghijklmnopqrst') {
+			return false;
+		}
+
+		return true;
+	} catch (err) {
+		// We don't expect any of the above to throw, but better to be safe.
+		return false;
+	}
+}
+
+module.exports = shouldUseNative() ? Object.assign : function (target, source) {
+	var from;
+	var to = toObject(target);
+	var symbols;
+
+	for (var s = 1; s < arguments.length; s++) {
+		from = Object(arguments[s]);
+
+		for (var key in from) {
+			if (hasOwnProperty.call(from, key)) {
+				to[key] = from[key];
+			}
+		}
+
+		if (getOwnPropertySymbols) {
+			symbols = getOwnPropertySymbols(from);
+			for (var i = 0; i < symbols.length; i++) {
+				if (propIsEnumerable.call(from, symbols[i])) {
+					to[symbols[i]] = from[symbols[i]];
+				}
+			}
+		}
+	}
+
+	return to;
+};
+
+},{}],35:[function(require,module,exports){
+exports.endianness = function () { return 'LE' };
+
+exports.hostname = function () {
+    if (typeof location !== 'undefined') {
+        return location.hostname
+    }
+    else return '';
+};
+
+exports.loadavg = function () { return [] };
+
+exports.uptime = function () { return 0 };
+
+exports.freemem = function () {
+    return Number.MAX_VALUE;
+};
+
+exports.totalmem = function () {
+    return Number.MAX_VALUE;
+};
+
+exports.cpus = function () { return [] };
+
+exports.type = function () { return 'Browser' };
+
+exports.release = function () {
+    if (typeof navigator !== 'undefined') {
+        return navigator.appVersion;
+    }
+    return '';
+};
+
+exports.networkInterfaces
+= exports.getNetworkInterfaces
+= function () { return {} };
+
+exports.arch = function () { return 'javascript' };
+
+exports.platform = function () { return 'browser' };
+
+exports.tmpdir = exports.tmpDir = function () {
+    return '/tmp';
+};
+
+exports.EOL = '\n';
+
+exports.homedir = function () {
+	return '/'
+};
+
+},{}],36:[function(require,module,exports){
+'use strict';
+
+
+var TYPED_OK =  (typeof Uint8Array !== 'undefined') &&
+                (typeof Uint16Array !== 'undefined') &&
+                (typeof Int32Array !== 'undefined');
+
+function _has(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+exports.assign = function (obj /*from1, from2, from3, ...*/) {
+  var sources = Array.prototype.slice.call(arguments, 1);
+  while (sources.length) {
+    var source = sources.shift();
+    if (!source) { continue; }
+
+    if (typeof source !== 'object') {
+      throw new TypeError(source + 'must be non-object');
+    }
+
+    for (var p in source) {
+      if (_has(source, p)) {
+        obj[p] = source[p];
+      }
+    }
+  }
+
+  return obj;
+};
+
+
+// reduce buffer size, avoiding mem copy
+exports.shrinkBuf = function (buf, size) {
+  if (buf.length === size) { return buf; }
+  if (buf.subarray) { return buf.subarray(0, size); }
+  buf.length = size;
+  return buf;
+};
+
+
+var fnTyped = {
+  arraySet: function (dest, src, src_offs, len, dest_offs) {
+    if (src.subarray && dest.subarray) {
+      dest.set(src.subarray(src_offs, src_offs + len), dest_offs);
+      return;
+    }
+    // Fallback to ordinary array
+    for (var i = 0; i < len; i++) {
+      dest[dest_offs + i] = src[src_offs + i];
+    }
+  },
+  // Join array of chunks to single array.
+  flattenChunks: function (chunks) {
+    var i, l, len, pos, chunk, result;
+
+    // calculate data length
+    len = 0;
+    for (i = 0, l = chunks.length; i < l; i++) {
+      len += chunks[i].length;
+    }
+
+    // join chunks
+    result = new Uint8Array(len);
+    pos = 0;
+    for (i = 0, l = chunks.length; i < l; i++) {
+      chunk = chunks[i];
+      result.set(chunk, pos);
+      pos += chunk.length;
+    }
+
+    return result;
+  }
+};
+
+var fnUntyped = {
+  arraySet: function (dest, src, src_offs, len, dest_offs) {
+    for (var i = 0; i < len; i++) {
+      dest[dest_offs + i] = src[src_offs + i];
+    }
+  },
+  // Join array of chunks to single array.
+  flattenChunks: function (chunks) {
+    return [].concat.apply([], chunks);
+  }
+};
+
+
+// Enable/Disable typed arrays use, for testing
+//
+exports.setTyped = function (on) {
+  if (on) {
+    exports.Buf8  = Uint8Array;
+    exports.Buf16 = Uint16Array;
+    exports.Buf32 = Int32Array;
+    exports.assign(exports, fnTyped);
+  } else {
+    exports.Buf8  = Array;
+    exports.Buf16 = Array;
+    exports.Buf32 = Array;
+    exports.assign(exports, fnUntyped);
+  }
+};
+
+exports.setTyped(TYPED_OK);
+
+},{}],37:[function(require,module,exports){
+'use strict';
+
+// Note: adler32 takes 12% for level 0 and 2% for level 6.
+// It isn't worth it to make additional optimizations as in original.
+// Small size is preferable.
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+function adler32(adler, buf, len, pos) {
+  var s1 = (adler & 0xffff) |0,
+      s2 = ((adler >>> 16) & 0xffff) |0,
+      n = 0;
+
+  while (len !== 0) {
+    // Set limit ~ twice less than 5552, to keep
+    // s2 in 31-bits, because we force signed ints.
+    // in other case %= will fail.
+    n = len > 2000 ? 2000 : len;
+    len -= n;
+
+    do {
+      s1 = (s1 + buf[pos++]) |0;
+      s2 = (s2 + s1) |0;
+    } while (--n);
+
+    s1 %= 65521;
+    s2 %= 65521;
+  }
+
+  return (s1 | (s2 << 16)) |0;
+}
+
+
+module.exports = adler32;
+
+},{}],38:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+module.exports = {
+
+  /* Allowed flush values; see deflate() and inflate() below for details */
+  Z_NO_FLUSH:         0,
+  Z_PARTIAL_FLUSH:    1,
+  Z_SYNC_FLUSH:       2,
+  Z_FULL_FLUSH:       3,
+  Z_FINISH:           4,
+  Z_BLOCK:            5,
+  Z_TREES:            6,
+
+  /* Return codes for the compression/decompression functions. Negative values
+  * are errors, positive values are used for special but normal events.
+  */
+  Z_OK:               0,
+  Z_STREAM_END:       1,
+  Z_NEED_DICT:        2,
+  Z_ERRNO:           -1,
+  Z_STREAM_ERROR:    -2,
+  Z_DATA_ERROR:      -3,
+  //Z_MEM_ERROR:     -4,
+  Z_BUF_ERROR:       -5,
+  //Z_VERSION_ERROR: -6,
+
+  /* compression levels */
+  Z_NO_COMPRESSION:         0,
+  Z_BEST_SPEED:             1,
+  Z_BEST_COMPRESSION:       9,
+  Z_DEFAULT_COMPRESSION:   -1,
+
+
+  Z_FILTERED:               1,
+  Z_HUFFMAN_ONLY:           2,
+  Z_RLE:                    3,
+  Z_FIXED:                  4,
+  Z_DEFAULT_STRATEGY:       0,
+
+  /* Possible values of the data_type field (though see inflate()) */
+  Z_BINARY:                 0,
+  Z_TEXT:                   1,
+  //Z_ASCII:                1, // = Z_TEXT (deprecated)
+  Z_UNKNOWN:                2,
+
+  /* The deflate compression method */
+  Z_DEFLATED:               8
+  //Z_NULL:                 null // Use -1 or null inline, depending on var type
+};
+
+},{}],39:[function(require,module,exports){
+'use strict';
+
+// Note: we can't get significant speed boost here.
+// So write code to minimize size - no pregenerated tables
+// and array tools dependencies.
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+// Use ordinary array, since untyped makes no boost here
+function makeTable() {
+  var c, table = [];
+
+  for (var n = 0; n < 256; n++) {
+    c = n;
+    for (var k = 0; k < 8; k++) {
+      c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
+    }
+    table[n] = c;
+  }
+
+  return table;
+}
+
+// Create table on load. Just 255 signed longs. Not a problem.
+var crcTable = makeTable();
+
+
+function crc32(crc, buf, len, pos) {
+  var t = crcTable,
+      end = pos + len;
+
+  crc ^= -1;
+
+  for (var i = pos; i < end; i++) {
+    crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xFF];
+  }
+
+  return (crc ^ (-1)); // >>> 0;
+}
+
+
+module.exports = crc32;
+
+},{}],40:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+var utils   = require('../utils/common');
+var trees   = require('./trees');
+var adler32 = require('./adler32');
+var crc32   = require('./crc32');
+var msg     = require('./messages');
+
+/* Public constants ==========================================================*/
+/* ===========================================================================*/
+
+
+/* Allowed flush values; see deflate() and inflate() below for details */
+var Z_NO_FLUSH      = 0;
+var Z_PARTIAL_FLUSH = 1;
+//var Z_SYNC_FLUSH    = 2;
+var Z_FULL_FLUSH    = 3;
+var Z_FINISH        = 4;
+var Z_BLOCK         = 5;
+//var Z_TREES         = 6;
+
+
+/* Return codes for the compression/decompression functions. Negative values
+ * are errors, positive values are used for special but normal events.
+ */
+var Z_OK            = 0;
+var Z_STREAM_END    = 1;
+//var Z_NEED_DICT     = 2;
+//var Z_ERRNO         = -1;
+var Z_STREAM_ERROR  = -2;
+var Z_DATA_ERROR    = -3;
+//var Z_MEM_ERROR     = -4;
+var Z_BUF_ERROR     = -5;
+//var Z_VERSION_ERROR = -6;
+
+
+/* compression levels */
+//var Z_NO_COMPRESSION      = 0;
+//var Z_BEST_SPEED          = 1;
+//var Z_BEST_COMPRESSION    = 9;
+var Z_DEFAULT_COMPRESSION = -1;
+
+
+var Z_FILTERED            = 1;
+var Z_HUFFMAN_ONLY        = 2;
+var Z_RLE                 = 3;
+var Z_FIXED               = 4;
+var Z_DEFAULT_STRATEGY    = 0;
+
+/* Possible values of the data_type field (though see inflate()) */
+//var Z_BINARY              = 0;
+//var Z_TEXT                = 1;
+//var Z_ASCII               = 1; // = Z_TEXT
+var Z_UNKNOWN             = 2;
+
+
+/* The deflate compression method */
+var Z_DEFLATED  = 8;
+
+/*============================================================================*/
+
+
+var MAX_MEM_LEVEL = 9;
+/* Maximum value for memLevel in deflateInit2 */
+var MAX_WBITS = 15;
+/* 32K LZ77 window */
+var DEF_MEM_LEVEL = 8;
+
+
+var LENGTH_CODES  = 29;
+/* number of length codes, not counting the special END_BLOCK code */
+var LITERALS      = 256;
+/* number of literal bytes 0..255 */
+var L_CODES       = LITERALS + 1 + LENGTH_CODES;
+/* number of Literal or Length codes, including the END_BLOCK code */
+var D_CODES       = 30;
+/* number of distance codes */
+var BL_CODES      = 19;
+/* number of codes used to transfer the bit lengths */
+var HEAP_SIZE     = 2 * L_CODES + 1;
+/* maximum heap size */
+var MAX_BITS  = 15;
+/* All codes must not exceed MAX_BITS bits */
+
+var MIN_MATCH = 3;
+var MAX_MATCH = 258;
+var MIN_LOOKAHEAD = (MAX_MATCH + MIN_MATCH + 1);
+
+var PRESET_DICT = 0x20;
+
+var INIT_STATE = 42;
+var EXTRA_STATE = 69;
+var NAME_STATE = 73;
+var COMMENT_STATE = 91;
+var HCRC_STATE = 103;
+var BUSY_STATE = 113;
+var FINISH_STATE = 666;
+
+var BS_NEED_MORE      = 1; /* block not completed, need more input or more output */
+var BS_BLOCK_DONE     = 2; /* block flush performed */
+var BS_FINISH_STARTED = 3; /* finish started, need only more output at next deflate */
+var BS_FINISH_DONE    = 4; /* finish done, accept no more input or output */
+
+var OS_CODE = 0x03; // Unix :) . Don't detect, use this default.
+
+function err(strm, errorCode) {
+  strm.msg = msg[errorCode];
+  return errorCode;
+}
+
+function rank(f) {
+  return ((f) << 1) - ((f) > 4 ? 9 : 0);
+}
+
+function zero(buf) { var len = buf.length; while (--len >= 0) { buf[len] = 0; } }
+
+
+/* =========================================================================
+ * Flush as much pending output as possible. All deflate() output goes
+ * through this function so some applications may wish to modify it
+ * to avoid allocating a large strm->output buffer and copying into it.
+ * (See also read_buf()).
+ */
+function flush_pending(strm) {
+  var s = strm.state;
+
+  //_tr_flush_bits(s);
+  var len = s.pending;
+  if (len > strm.avail_out) {
+    len = strm.avail_out;
+  }
+  if (len === 0) { return; }
+
+  utils.arraySet(strm.output, s.pending_buf, s.pending_out, len, strm.next_out);
+  strm.next_out += len;
+  s.pending_out += len;
+  strm.total_out += len;
+  strm.avail_out -= len;
+  s.pending -= len;
+  if (s.pending === 0) {
+    s.pending_out = 0;
+  }
+}
+
+
+function flush_block_only(s, last) {
+  trees._tr_flush_block(s, (s.block_start >= 0 ? s.block_start : -1), s.strstart - s.block_start, last);
+  s.block_start = s.strstart;
+  flush_pending(s.strm);
+}
+
+
+function put_byte(s, b) {
+  s.pending_buf[s.pending++] = b;
+}
+
+
+/* =========================================================================
+ * Put a short in the pending buffer. The 16-bit value is put in MSB order.
+ * IN assertion: the stream state is correct and there is enough room in
+ * pending_buf.
+ */
+function putShortMSB(s, b) {
+//  put_byte(s, (Byte)(b >> 8));
+//  put_byte(s, (Byte)(b & 0xff));
+  s.pending_buf[s.pending++] = (b >>> 8) & 0xff;
+  s.pending_buf[s.pending++] = b & 0xff;
+}
+
+
+/* ===========================================================================
+ * Read a new buffer from the current input stream, update the adler32
+ * and total number of bytes read.  All deflate() input goes through
+ * this function so some applications may wish to modify it to avoid
+ * allocating a large strm->input buffer and copying from it.
+ * (See also flush_pending()).
+ */
+function read_buf(strm, buf, start, size) {
+  var len = strm.avail_in;
+
+  if (len > size) { len = size; }
+  if (len === 0) { return 0; }
+
+  strm.avail_in -= len;
+
+  // zmemcpy(buf, strm->next_in, len);
+  utils.arraySet(buf, strm.input, strm.next_in, len, start);
+  if (strm.state.wrap === 1) {
+    strm.adler = adler32(strm.adler, buf, len, start);
+  }
+
+  else if (strm.state.wrap === 2) {
+    strm.adler = crc32(strm.adler, buf, len, start);
+  }
+
+  strm.next_in += len;
+  strm.total_in += len;
+
+  return len;
+}
+
+
+/* ===========================================================================
+ * Set match_start to the longest match starting at the given string and
+ * return its length. Matches shorter or equal to prev_length are discarded,
+ * in which case the result is equal to prev_length and match_start is
+ * garbage.
+ * IN assertions: cur_match is the head of the hash chain for the current
+ *   string (strstart) and its distance is <= MAX_DIST, and prev_length >= 1
+ * OUT assertion: the match length is not greater than s->lookahead.
+ */
+function longest_match(s, cur_match) {
+  var chain_length = s.max_chain_length;      /* max hash chain length */
+  var scan = s.strstart; /* current string */
+  var match;                       /* matched string */
+  var len;                           /* length of current match */
+  var best_len = s.prev_length;              /* best match length so far */
+  var nice_match = s.nice_match;             /* stop if match long enough */
+  var limit = (s.strstart > (s.w_size - MIN_LOOKAHEAD)) ?
+      s.strstart - (s.w_size - MIN_LOOKAHEAD) : 0/*NIL*/;
+
+  var _win = s.window; // shortcut
+
+  var wmask = s.w_mask;
+  var prev  = s.prev;
+
+  /* Stop when cur_match becomes <= limit. To simplify the code,
+   * we prevent matches with the string of window index 0.
+   */
+
+  var strend = s.strstart + MAX_MATCH;
+  var scan_end1  = _win[scan + best_len - 1];
+  var scan_end   = _win[scan + best_len];
+
+  /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
+   * It is easy to get rid of this optimization if necessary.
+   */
+  // Assert(s->hash_bits >= 8 && MAX_MATCH == 258, "Code too clever");
+
+  /* Do not waste too much time if we already have a good match: */
+  if (s.prev_length >= s.good_match) {
+    chain_length >>= 2;
+  }
+  /* Do not look for matches beyond the end of the input. This is necessary
+   * to make deflate deterministic.
+   */
+  if (nice_match > s.lookahead) { nice_match = s.lookahead; }
+
+  // Assert((ulg)s->strstart <= s->window_size-MIN_LOOKAHEAD, "need lookahead");
+
+  do {
+    // Assert(cur_match < s->strstart, "no future");
+    match = cur_match;
+
+    /* Skip to next match if the match length cannot increase
+     * or if the match length is less than 2.  Note that the checks below
+     * for insufficient lookahead only occur occasionally for performance
+     * reasons.  Therefore uninitialized memory will be accessed, and
+     * conditional jumps will be made that depend on those values.
+     * However the length of the match is limited to the lookahead, so
+     * the output of deflate is not affected by the uninitialized values.
+     */
+
+    if (_win[match + best_len]     !== scan_end  ||
+        _win[match + best_len - 1] !== scan_end1 ||
+        _win[match]                !== _win[scan] ||
+        _win[++match]              !== _win[scan + 1]) {
+      continue;
+    }
+
+    /* The check at best_len-1 can be removed because it will be made
+     * again later. (This heuristic is not always a win.)
+     * It is not necessary to compare scan[2] and match[2] since they
+     * are always equal when the other bytes match, given that
+     * the hash keys are equal and that HASH_BITS >= 8.
+     */
+    scan += 2;
+    match++;
+    // Assert(*scan == *match, "match[2]?");
+
+    /* We check for insufficient lookahead only every 8th comparison;
+     * the 256th check will be made at strstart+258.
+     */
+    do {
+      /*jshint noempty:false*/
+    } while (_win[++scan] === _win[++match] && _win[++scan] === _win[++match] &&
+             _win[++scan] === _win[++match] && _win[++scan] === _win[++match] &&
+             _win[++scan] === _win[++match] && _win[++scan] === _win[++match] &&
+             _win[++scan] === _win[++match] && _win[++scan] === _win[++match] &&
+             scan < strend);
+
+    // Assert(scan <= s->window+(unsigned)(s->window_size-1), "wild scan");
+
+    len = MAX_MATCH - (strend - scan);
+    scan = strend - MAX_MATCH;
+
+    if (len > best_len) {
+      s.match_start = cur_match;
+      best_len = len;
+      if (len >= nice_match) {
+        break;
+      }
+      scan_end1  = _win[scan + best_len - 1];
+      scan_end   = _win[scan + best_len];
+    }
+  } while ((cur_match = prev[cur_match & wmask]) > limit && --chain_length !== 0);
+
+  if (best_len <= s.lookahead) {
+    return best_len;
+  }
+  return s.lookahead;
+}
+
+
+/* ===========================================================================
+ * Fill the window when the lookahead becomes insufficient.
+ * Updates strstart and lookahead.
+ *
+ * IN assertion: lookahead < MIN_LOOKAHEAD
+ * OUT assertions: strstart <= window_size-MIN_LOOKAHEAD
+ *    At least one byte has been read, or avail_in == 0; reads are
+ *    performed for at least two bytes (required for the zip translate_eol
+ *    option -- not supported here).
+ */
+function fill_window(s) {
+  var _w_size = s.w_size;
+  var p, n, m, more, str;
+
+  //Assert(s->lookahead < MIN_LOOKAHEAD, "already enough lookahead");
+
+  do {
+    more = s.window_size - s.lookahead - s.strstart;
+
+    // JS ints have 32 bit, block below not needed
+    /* Deal with !@#$% 64K limit: */
+    //if (sizeof(int) <= 2) {
+    //    if (more == 0 && s->strstart == 0 && s->lookahead == 0) {
+    //        more = wsize;
+    //
+    //  } else if (more == (unsigned)(-1)) {
+    //        /* Very unlikely, but possible on 16 bit machine if
+    //         * strstart == 0 && lookahead == 1 (input done a byte at time)
+    //         */
+    //        more--;
+    //    }
+    //}
+
+
+    /* If the window is almost full and there is insufficient lookahead,
+     * move the upper half to the lower one to make room in the upper half.
+     */
+    if (s.strstart >= _w_size + (_w_size - MIN_LOOKAHEAD)) {
+
+      utils.arraySet(s.window, s.window, _w_size, _w_size, 0);
+      s.match_start -= _w_size;
+      s.strstart -= _w_size;
+      /* we now have strstart >= MAX_DIST */
+      s.block_start -= _w_size;
+
+      /* Slide the hash table (could be avoided with 32 bit values
+       at the expense of memory usage). We slide even when level == 0
+       to keep the hash table consistent if we switch back to level > 0
+       later. (Using level 0 permanently is not an optimal usage of
+       zlib, so we don't care about this pathological case.)
+       */
+
+      n = s.hash_size;
+      p = n;
+      do {
+        m = s.head[--p];
+        s.head[p] = (m >= _w_size ? m - _w_size : 0);
+      } while (--n);
+
+      n = _w_size;
+      p = n;
+      do {
+        m = s.prev[--p];
+        s.prev[p] = (m >= _w_size ? m - _w_size : 0);
+        /* If n is not on any hash chain, prev[n] is garbage but
+         * its value will never be used.
+         */
+      } while (--n);
+
+      more += _w_size;
+    }
+    if (s.strm.avail_in === 0) {
+      break;
+    }
+
+    /* If there was no sliding:
+     *    strstart <= WSIZE+MAX_DIST-1 && lookahead <= MIN_LOOKAHEAD - 1 &&
+     *    more == window_size - lookahead - strstart
+     * => more >= window_size - (MIN_LOOKAHEAD-1 + WSIZE + MAX_DIST-1)
+     * => more >= window_size - 2*WSIZE + 2
+     * In the BIG_MEM or MMAP case (not yet supported),
+     *   window_size == input_size + MIN_LOOKAHEAD  &&
+     *   strstart + s->lookahead <= input_size => more >= MIN_LOOKAHEAD.
+     * Otherwise, window_size == 2*WSIZE so more >= 2.
+     * If there was sliding, more >= WSIZE. So in all cases, more >= 2.
+     */
+    //Assert(more >= 2, "more < 2");
+    n = read_buf(s.strm, s.window, s.strstart + s.lookahead, more);
+    s.lookahead += n;
+
+    /* Initialize the hash value now that we have some input: */
+    if (s.lookahead + s.insert >= MIN_MATCH) {
+      str = s.strstart - s.insert;
+      s.ins_h = s.window[str];
+
+      /* UPDATE_HASH(s, s->ins_h, s->window[str + 1]); */
+      s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + 1]) & s.hash_mask;
+//#if MIN_MATCH != 3
+//        Call update_hash() MIN_MATCH-3 more times
+//#endif
+      while (s.insert) {
+        /* UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]); */
+        s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + MIN_MATCH - 1]) & s.hash_mask;
+
+        s.prev[str & s.w_mask] = s.head[s.ins_h];
+        s.head[s.ins_h] = str;
+        str++;
+        s.insert--;
+        if (s.lookahead + s.insert < MIN_MATCH) {
+          break;
+        }
+      }
+    }
+    /* If the whole input has less than MIN_MATCH bytes, ins_h is garbage,
+     * but this is not important since only literal bytes will be emitted.
+     */
+
+  } while (s.lookahead < MIN_LOOKAHEAD && s.strm.avail_in !== 0);
+
+  /* If the WIN_INIT bytes after the end of the current data have never been
+   * written, then zero those bytes in order to avoid memory check reports of
+   * the use of uninitialized (or uninitialised as Julian writes) bytes by
+   * the longest match routines.  Update the high water mark for the next
+   * time through here.  WIN_INIT is set to MAX_MATCH since the longest match
+   * routines allow scanning to strstart + MAX_MATCH, ignoring lookahead.
+   */
+//  if (s.high_water < s.window_size) {
+//    var curr = s.strstart + s.lookahead;
+//    var init = 0;
+//
+//    if (s.high_water < curr) {
+//      /* Previous high water mark below current data -- zero WIN_INIT
+//       * bytes or up to end of window, whichever is less.
+//       */
+//      init = s.window_size - curr;
+//      if (init > WIN_INIT)
+//        init = WIN_INIT;
+//      zmemzero(s->window + curr, (unsigned)init);
+//      s->high_water = curr + init;
+//    }
+//    else if (s->high_water < (ulg)curr + WIN_INIT) {
+//      /* High water mark at or above current data, but below current data
+//       * plus WIN_INIT -- zero out to current data plus WIN_INIT, or up
+//       * to end of window, whichever is less.
+//       */
+//      init = (ulg)curr + WIN_INIT - s->high_water;
+//      if (init > s->window_size - s->high_water)
+//        init = s->window_size - s->high_water;
+//      zmemzero(s->window + s->high_water, (unsigned)init);
+//      s->high_water += init;
+//    }
+//  }
+//
+//  Assert((ulg)s->strstart <= s->window_size - MIN_LOOKAHEAD,
+//    "not enough room for search");
+}
+
+/* ===========================================================================
+ * Copy without compression as much as possible from the input stream, return
+ * the current block state.
+ * This function does not insert new strings in the dictionary since
+ * uncompressible data is probably not useful. This function is used
+ * only for the level=0 compression option.
+ * NOTE: this function should be optimized to avoid extra copying from
+ * window to pending_buf.
+ */
+function deflate_stored(s, flush) {
+  /* Stored blocks are limited to 0xffff bytes, pending_buf is limited
+   * to pending_buf_size, and each stored block has a 5 byte header:
+   */
+  var max_block_size = 0xffff;
+
+  if (max_block_size > s.pending_buf_size - 5) {
+    max_block_size = s.pending_buf_size - 5;
+  }
+
+  /* Copy as much as possible from input to output: */
+  for (;;) {
+    /* Fill the window as much as possible: */
+    if (s.lookahead <= 1) {
+
+      //Assert(s->strstart < s->w_size+MAX_DIST(s) ||
+      //  s->block_start >= (long)s->w_size, "slide too late");
+//      if (!(s.strstart < s.w_size + (s.w_size - MIN_LOOKAHEAD) ||
+//        s.block_start >= s.w_size)) {
+//        throw  new Error("slide too late");
+//      }
+
+      fill_window(s);
+      if (s.lookahead === 0 && flush === Z_NO_FLUSH) {
+        return BS_NEED_MORE;
+      }
+
+      if (s.lookahead === 0) {
+        break;
+      }
+      /* flush the current block */
+    }
+    //Assert(s->block_start >= 0L, "block gone");
+//    if (s.block_start < 0) throw new Error("block gone");
+
+    s.strstart += s.lookahead;
+    s.lookahead = 0;
+
+    /* Emit a stored block if pending_buf will be full: */
+    var max_start = s.block_start + max_block_size;
+
+    if (s.strstart === 0 || s.strstart >= max_start) {
+      /* strstart == 0 is possible when wraparound on 16-bit machine */
+      s.lookahead = s.strstart - max_start;
+      s.strstart = max_start;
+      /*** FLUSH_BLOCK(s, 0); ***/
+      flush_block_only(s, false);
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+      /***/
+
+
+    }
+    /* Flush if we may have to slide, otherwise block_start may become
+     * negative and the data will be gone:
+     */
+    if (s.strstart - s.block_start >= (s.w_size - MIN_LOOKAHEAD)) {
+      /*** FLUSH_BLOCK(s, 0); ***/
+      flush_block_only(s, false);
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+      /***/
+    }
+  }
+
+  s.insert = 0;
+
+  if (flush === Z_FINISH) {
+    /*** FLUSH_BLOCK(s, 1); ***/
+    flush_block_only(s, true);
+    if (s.strm.avail_out === 0) {
+      return BS_FINISH_STARTED;
+    }
+    /***/
+    return BS_FINISH_DONE;
+  }
+
+  if (s.strstart > s.block_start) {
+    /*** FLUSH_BLOCK(s, 0); ***/
+    flush_block_only(s, false);
+    if (s.strm.avail_out === 0) {
+      return BS_NEED_MORE;
+    }
+    /***/
+  }
+
+  return BS_NEED_MORE;
+}
+
+/* ===========================================================================
+ * Compress as much as possible from the input stream, return the current
+ * block state.
+ * This function does not perform lazy evaluation of matches and inserts
+ * new strings in the dictionary only for unmatched strings or for short
+ * matches. It is used only for the fast compression options.
+ */
+function deflate_fast(s, flush) {
+  var hash_head;        /* head of the hash chain */
+  var bflush;           /* set if current block must be flushed */
+
+  for (;;) {
+    /* Make sure that we always have enough lookahead, except
+     * at the end of the input file. We need MAX_MATCH bytes
+     * for the next match, plus MIN_MATCH bytes to insert the
+     * string following the next match.
+     */
+    if (s.lookahead < MIN_LOOKAHEAD) {
+      fill_window(s);
+      if (s.lookahead < MIN_LOOKAHEAD && flush === Z_NO_FLUSH) {
+        return BS_NEED_MORE;
+      }
+      if (s.lookahead === 0) {
+        break; /* flush the current block */
+      }
+    }
+
+    /* Insert the string window[strstart .. strstart+2] in the
+     * dictionary, and set hash_head to the head of the hash chain:
+     */
+    hash_head = 0/*NIL*/;
+    if (s.lookahead >= MIN_MATCH) {
+      /*** INSERT_STRING(s, s.strstart, hash_head); ***/
+      s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[s.strstart + MIN_MATCH - 1]) & s.hash_mask;
+      hash_head = s.prev[s.strstart & s.w_mask] = s.head[s.ins_h];
+      s.head[s.ins_h] = s.strstart;
+      /***/
+    }
+
+    /* Find the longest match, discarding those <= prev_length.
+     * At this point we have always match_length < MIN_MATCH
+     */
+    if (hash_head !== 0/*NIL*/ && ((s.strstart - hash_head) <= (s.w_size - MIN_LOOKAHEAD))) {
+      /* To simplify the code, we prevent matches with the string
+       * of window index 0 (in particular we have to avoid a match
+       * of the string with itself at the start of the input file).
+       */
+      s.match_length = longest_match(s, hash_head);
+      /* longest_match() sets match_start */
+    }
+    if (s.match_length >= MIN_MATCH) {
+      // check_match(s, s.strstart, s.match_start, s.match_length); // for debug only
+
+      /*** _tr_tally_dist(s, s.strstart - s.match_start,
+                     s.match_length - MIN_MATCH, bflush); ***/
+      bflush = trees._tr_tally(s, s.strstart - s.match_start, s.match_length - MIN_MATCH);
+
+      s.lookahead -= s.match_length;
+
+      /* Insert new strings in the hash table only if the match length
+       * is not too large. This saves time but degrades compression.
+       */
+      if (s.match_length <= s.max_lazy_match/*max_insert_length*/ && s.lookahead >= MIN_MATCH) {
+        s.match_length--; /* string at strstart already in table */
+        do {
+          s.strstart++;
+          /*** INSERT_STRING(s, s.strstart, hash_head); ***/
+          s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[s.strstart + MIN_MATCH - 1]) & s.hash_mask;
+          hash_head = s.prev[s.strstart & s.w_mask] = s.head[s.ins_h];
+          s.head[s.ins_h] = s.strstart;
+          /***/
+          /* strstart never exceeds WSIZE-MAX_MATCH, so there are
+           * always MIN_MATCH bytes ahead.
+           */
+        } while (--s.match_length !== 0);
+        s.strstart++;
+      } else
+      {
+        s.strstart += s.match_length;
+        s.match_length = 0;
+        s.ins_h = s.window[s.strstart];
+        /* UPDATE_HASH(s, s.ins_h, s.window[s.strstart+1]); */
+        s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[s.strstart + 1]) & s.hash_mask;
+
+//#if MIN_MATCH != 3
+//                Call UPDATE_HASH() MIN_MATCH-3 more times
+//#endif
+        /* If lookahead < MIN_MATCH, ins_h is garbage, but it does not
+         * matter since it will be recomputed at next deflate call.
+         */
+      }
+    } else {
+      /* No match, output a literal byte */
+      //Tracevv((stderr,"%c", s.window[s.strstart]));
+      /*** _tr_tally_lit(s, s.window[s.strstart], bflush); ***/
+      bflush = trees._tr_tally(s, 0, s.window[s.strstart]);
+
+      s.lookahead--;
+      s.strstart++;
+    }
+    if (bflush) {
+      /*** FLUSH_BLOCK(s, 0); ***/
+      flush_block_only(s, false);
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+      /***/
+    }
+  }
+  s.insert = ((s.strstart < (MIN_MATCH - 1)) ? s.strstart : MIN_MATCH - 1);
+  if (flush === Z_FINISH) {
+    /*** FLUSH_BLOCK(s, 1); ***/
+    flush_block_only(s, true);
+    if (s.strm.avail_out === 0) {
+      return BS_FINISH_STARTED;
+    }
+    /***/
+    return BS_FINISH_DONE;
+  }
+  if (s.last_lit) {
+    /*** FLUSH_BLOCK(s, 0); ***/
+    flush_block_only(s, false);
+    if (s.strm.avail_out === 0) {
+      return BS_NEED_MORE;
+    }
+    /***/
+  }
+  return BS_BLOCK_DONE;
+}
+
+/* ===========================================================================
+ * Same as above, but achieves better compression. We use a lazy
+ * evaluation for matches: a match is finally adopted only if there is
+ * no better match at the next window position.
+ */
+function deflate_slow(s, flush) {
+  var hash_head;          /* head of hash chain */
+  var bflush;              /* set if current block must be flushed */
+
+  var max_insert;
+
+  /* Process the input block. */
+  for (;;) {
+    /* Make sure that we always have enough lookahead, except
+     * at the end of the input file. We need MAX_MATCH bytes
+     * for the next match, plus MIN_MATCH bytes to insert the
+     * string following the next match.
+     */
+    if (s.lookahead < MIN_LOOKAHEAD) {
+      fill_window(s);
+      if (s.lookahead < MIN_LOOKAHEAD && flush === Z_NO_FLUSH) {
+        return BS_NEED_MORE;
+      }
+      if (s.lookahead === 0) { break; } /* flush the current block */
+    }
+
+    /* Insert the string window[strstart .. strstart+2] in the
+     * dictionary, and set hash_head to the head of the hash chain:
+     */
+    hash_head = 0/*NIL*/;
+    if (s.lookahead >= MIN_MATCH) {
+      /*** INSERT_STRING(s, s.strstart, hash_head); ***/
+      s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[s.strstart + MIN_MATCH - 1]) & s.hash_mask;
+      hash_head = s.prev[s.strstart & s.w_mask] = s.head[s.ins_h];
+      s.head[s.ins_h] = s.strstart;
+      /***/
+    }
+
+    /* Find the longest match, discarding those <= prev_length.
+     */
+    s.prev_length = s.match_length;
+    s.prev_match = s.match_start;
+    s.match_length = MIN_MATCH - 1;
+
+    if (hash_head !== 0/*NIL*/ && s.prev_length < s.max_lazy_match &&
+        s.strstart - hash_head <= (s.w_size - MIN_LOOKAHEAD)/*MAX_DIST(s)*/) {
+      /* To simplify the code, we prevent matches with the string
+       * of window index 0 (in particular we have to avoid a match
+       * of the string with itself at the start of the input file).
+       */
+      s.match_length = longest_match(s, hash_head);
+      /* longest_match() sets match_start */
+
+      if (s.match_length <= 5 &&
+         (s.strategy === Z_FILTERED || (s.match_length === MIN_MATCH && s.strstart - s.match_start > 4096/*TOO_FAR*/))) {
+
+        /* If prev_match is also MIN_MATCH, match_start is garbage
+         * but we will ignore the current match anyway.
+         */
+        s.match_length = MIN_MATCH - 1;
+      }
+    }
+    /* If there was a match at the previous step and the current
+     * match is not better, output the previous match:
+     */
+    if (s.prev_length >= MIN_MATCH && s.match_length <= s.prev_length) {
+      max_insert = s.strstart + s.lookahead - MIN_MATCH;
+      /* Do not insert strings in hash table beyond this. */
+
+      //check_match(s, s.strstart-1, s.prev_match, s.prev_length);
+
+      /***_tr_tally_dist(s, s.strstart - 1 - s.prev_match,
+                     s.prev_length - MIN_MATCH, bflush);***/
+      bflush = trees._tr_tally(s, s.strstart - 1 - s.prev_match, s.prev_length - MIN_MATCH);
+      /* Insert in hash table all strings up to the end of the match.
+       * strstart-1 and strstart are already inserted. If there is not
+       * enough lookahead, the last two strings are not inserted in
+       * the hash table.
+       */
+      s.lookahead -= s.prev_length - 1;
+      s.prev_length -= 2;
+      do {
+        if (++s.strstart <= max_insert) {
+          /*** INSERT_STRING(s, s.strstart, hash_head); ***/
+          s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[s.strstart + MIN_MATCH - 1]) & s.hash_mask;
+          hash_head = s.prev[s.strstart & s.w_mask] = s.head[s.ins_h];
+          s.head[s.ins_h] = s.strstart;
+          /***/
+        }
+      } while (--s.prev_length !== 0);
+      s.match_available = 0;
+      s.match_length = MIN_MATCH - 1;
+      s.strstart++;
+
+      if (bflush) {
+        /*** FLUSH_BLOCK(s, 0); ***/
+        flush_block_only(s, false);
+        if (s.strm.avail_out === 0) {
+          return BS_NEED_MORE;
+        }
+        /***/
+      }
+
+    } else if (s.match_available) {
+      /* If there was no match at the previous position, output a
+       * single literal. If there was a match but the current match
+       * is longer, truncate the previous match to a single literal.
+       */
+      //Tracevv((stderr,"%c", s->window[s->strstart-1]));
+      /*** _tr_tally_lit(s, s.window[s.strstart-1], bflush); ***/
+      bflush = trees._tr_tally(s, 0, s.window[s.strstart - 1]);
+
+      if (bflush) {
+        /*** FLUSH_BLOCK_ONLY(s, 0) ***/
+        flush_block_only(s, false);
+        /***/
+      }
+      s.strstart++;
+      s.lookahead--;
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+    } else {
+      /* There is no previous match to compare with, wait for
+       * the next step to decide.
+       */
+      s.match_available = 1;
+      s.strstart++;
+      s.lookahead--;
+    }
+  }
+  //Assert (flush != Z_NO_FLUSH, "no flush?");
+  if (s.match_available) {
+    //Tracevv((stderr,"%c", s->window[s->strstart-1]));
+    /*** _tr_tally_lit(s, s.window[s.strstart-1], bflush); ***/
+    bflush = trees._tr_tally(s, 0, s.window[s.strstart - 1]);
+
+    s.match_available = 0;
+  }
+  s.insert = s.strstart < MIN_MATCH - 1 ? s.strstart : MIN_MATCH - 1;
+  if (flush === Z_FINISH) {
+    /*** FLUSH_BLOCK(s, 1); ***/
+    flush_block_only(s, true);
+    if (s.strm.avail_out === 0) {
+      return BS_FINISH_STARTED;
+    }
+    /***/
+    return BS_FINISH_DONE;
+  }
+  if (s.last_lit) {
+    /*** FLUSH_BLOCK(s, 0); ***/
+    flush_block_only(s, false);
+    if (s.strm.avail_out === 0) {
+      return BS_NEED_MORE;
+    }
+    /***/
+  }
+
+  return BS_BLOCK_DONE;
+}
+
+
+/* ===========================================================================
+ * For Z_RLE, simply look for runs of bytes, generate matches only of distance
+ * one.  Do not maintain a hash table.  (It will be regenerated if this run of
+ * deflate switches away from Z_RLE.)
+ */
+function deflate_rle(s, flush) {
+  var bflush;            /* set if current block must be flushed */
+  var prev;              /* byte at distance one to match */
+  var scan, strend;      /* scan goes up to strend for length of run */
+
+  var _win = s.window;
+
+  for (;;) {
+    /* Make sure that we always have enough lookahead, except
+     * at the end of the input file. We need MAX_MATCH bytes
+     * for the longest run, plus one for the unrolled loop.
+     */
+    if (s.lookahead <= MAX_MATCH) {
+      fill_window(s);
+      if (s.lookahead <= MAX_MATCH && flush === Z_NO_FLUSH) {
+        return BS_NEED_MORE;
+      }
+      if (s.lookahead === 0) { break; } /* flush the current block */
+    }
+
+    /* See how many times the previous byte repeats */
+    s.match_length = 0;
+    if (s.lookahead >= MIN_MATCH && s.strstart > 0) {
+      scan = s.strstart - 1;
+      prev = _win[scan];
+      if (prev === _win[++scan] && prev === _win[++scan] && prev === _win[++scan]) {
+        strend = s.strstart + MAX_MATCH;
+        do {
+          /*jshint noempty:false*/
+        } while (prev === _win[++scan] && prev === _win[++scan] &&
+                 prev === _win[++scan] && prev === _win[++scan] &&
+                 prev === _win[++scan] && prev === _win[++scan] &&
+                 prev === _win[++scan] && prev === _win[++scan] &&
+                 scan < strend);
+        s.match_length = MAX_MATCH - (strend - scan);
+        if (s.match_length > s.lookahead) {
+          s.match_length = s.lookahead;
+        }
+      }
+      //Assert(scan <= s->window+(uInt)(s->window_size-1), "wild scan");
+    }
+
+    /* Emit match if have run of MIN_MATCH or longer, else emit literal */
+    if (s.match_length >= MIN_MATCH) {
+      //check_match(s, s.strstart, s.strstart - 1, s.match_length);
+
+      /*** _tr_tally_dist(s, 1, s.match_length - MIN_MATCH, bflush); ***/
+      bflush = trees._tr_tally(s, 1, s.match_length - MIN_MATCH);
+
+      s.lookahead -= s.match_length;
+      s.strstart += s.match_length;
+      s.match_length = 0;
+    } else {
+      /* No match, output a literal byte */
+      //Tracevv((stderr,"%c", s->window[s->strstart]));
+      /*** _tr_tally_lit(s, s.window[s.strstart], bflush); ***/
+      bflush = trees._tr_tally(s, 0, s.window[s.strstart]);
+
+      s.lookahead--;
+      s.strstart++;
+    }
+    if (bflush) {
+      /*** FLUSH_BLOCK(s, 0); ***/
+      flush_block_only(s, false);
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+      /***/
+    }
+  }
+  s.insert = 0;
+  if (flush === Z_FINISH) {
+    /*** FLUSH_BLOCK(s, 1); ***/
+    flush_block_only(s, true);
+    if (s.strm.avail_out === 0) {
+      return BS_FINISH_STARTED;
+    }
+    /***/
+    return BS_FINISH_DONE;
+  }
+  if (s.last_lit) {
+    /*** FLUSH_BLOCK(s, 0); ***/
+    flush_block_only(s, false);
+    if (s.strm.avail_out === 0) {
+      return BS_NEED_MORE;
+    }
+    /***/
+  }
+  return BS_BLOCK_DONE;
+}
+
+/* ===========================================================================
+ * For Z_HUFFMAN_ONLY, do not look for matches.  Do not maintain a hash table.
+ * (It will be regenerated if this run of deflate switches away from Huffman.)
+ */
+function deflate_huff(s, flush) {
+  var bflush;             /* set if current block must be flushed */
+
+  for (;;) {
+    /* Make sure that we have a literal to write. */
+    if (s.lookahead === 0) {
+      fill_window(s);
+      if (s.lookahead === 0) {
+        if (flush === Z_NO_FLUSH) {
+          return BS_NEED_MORE;
+        }
+        break;      /* flush the current block */
+      }
+    }
+
+    /* Output a literal byte */
+    s.match_length = 0;
+    //Tracevv((stderr,"%c", s->window[s->strstart]));
+    /*** _tr_tally_lit(s, s.window[s.strstart], bflush); ***/
+    bflush = trees._tr_tally(s, 0, s.window[s.strstart]);
+    s.lookahead--;
+    s.strstart++;
+    if (bflush) {
+      /*** FLUSH_BLOCK(s, 0); ***/
+      flush_block_only(s, false);
+      if (s.strm.avail_out === 0) {
+        return BS_NEED_MORE;
+      }
+      /***/
+    }
+  }
+  s.insert = 0;
+  if (flush === Z_FINISH) {
+    /*** FLUSH_BLOCK(s, 1); ***/
+    flush_block_only(s, true);
+    if (s.strm.avail_out === 0) {
+      return BS_FINISH_STARTED;
+    }
+    /***/
+    return BS_FINISH_DONE;
+  }
+  if (s.last_lit) {
+    /*** FLUSH_BLOCK(s, 0); ***/
+    flush_block_only(s, false);
+    if (s.strm.avail_out === 0) {
+      return BS_NEED_MORE;
+    }
+    /***/
+  }
+  return BS_BLOCK_DONE;
+}
+
+/* Values for max_lazy_match, good_match and max_chain_length, depending on
+ * the desired pack level (0..9). The values given below have been tuned to
+ * exclude worst case performance for pathological files. Better values may be
+ * found for specific files.
+ */
+function Config(good_length, max_lazy, nice_length, max_chain, func) {
+  this.good_length = good_length;
+  this.max_lazy = max_lazy;
+  this.nice_length = nice_length;
+  this.max_chain = max_chain;
+  this.func = func;
+}
+
+var configuration_table;
+
+configuration_table = [
+  /*      good lazy nice chain */
+  new Config(0, 0, 0, 0, deflate_stored),          /* 0 store only */
+  new Config(4, 4, 8, 4, deflate_fast),            /* 1 max speed, no lazy matches */
+  new Config(4, 5, 16, 8, deflate_fast),           /* 2 */
+  new Config(4, 6, 32, 32, deflate_fast),          /* 3 */
+
+  new Config(4, 4, 16, 16, deflate_slow),          /* 4 lazy matches */
+  new Config(8, 16, 32, 32, deflate_slow),         /* 5 */
+  new Config(8, 16, 128, 128, deflate_slow),       /* 6 */
+  new Config(8, 32, 128, 256, deflate_slow),       /* 7 */
+  new Config(32, 128, 258, 1024, deflate_slow),    /* 8 */
+  new Config(32, 258, 258, 4096, deflate_slow)     /* 9 max compression */
+];
+
+
+/* ===========================================================================
+ * Initialize the "longest match" routines for a new zlib stream
+ */
+function lm_init(s) {
+  s.window_size = 2 * s.w_size;
+
+  /*** CLEAR_HASH(s); ***/
+  zero(s.head); // Fill with NIL (= 0);
+
+  /* Set the default configuration parameters:
+   */
+  s.max_lazy_match = configuration_table[s.level].max_lazy;
+  s.good_match = configuration_table[s.level].good_length;
+  s.nice_match = configuration_table[s.level].nice_length;
+  s.max_chain_length = configuration_table[s.level].max_chain;
+
+  s.strstart = 0;
+  s.block_start = 0;
+  s.lookahead = 0;
+  s.insert = 0;
+  s.match_length = s.prev_length = MIN_MATCH - 1;
+  s.match_available = 0;
+  s.ins_h = 0;
+}
+
+
+function DeflateState() {
+  this.strm = null;            /* pointer back to this zlib stream */
+  this.status = 0;            /* as the name implies */
+  this.pending_buf = null;      /* output still pending */
+  this.pending_buf_size = 0;  /* size of pending_buf */
+  this.pending_out = 0;       /* next pending byte to output to the stream */
+  this.pending = 0;           /* nb of bytes in the pending buffer */
+  this.wrap = 0;              /* bit 0 true for zlib, bit 1 true for gzip */
+  this.gzhead = null;         /* gzip header information to write */
+  this.gzindex = 0;           /* where in extra, name, or comment */
+  this.method = Z_DEFLATED; /* can only be DEFLATED */
+  this.last_flush = -1;   /* value of flush param for previous deflate call */
+
+  this.w_size = 0;  /* LZ77 window size (32K by default) */
+  this.w_bits = 0;  /* log2(w_size)  (8..16) */
+  this.w_mask = 0;  /* w_size - 1 */
+
+  this.window = null;
+  /* Sliding window. Input bytes are read into the second half of the window,
+   * and move to the first half later to keep a dictionary of at least wSize
+   * bytes. With this organization, matches are limited to a distance of
+   * wSize-MAX_MATCH bytes, but this ensures that IO is always
+   * performed with a length multiple of the block size.
+   */
+
+  this.window_size = 0;
+  /* Actual size of window: 2*wSize, except when the user input buffer
+   * is directly used as sliding window.
+   */
+
+  this.prev = null;
+  /* Link to older string with same hash index. To limit the size of this
+   * array to 64K, this link is maintained only for the last 32K strings.
+   * An index in this array is thus a window index modulo 32K.
+   */
+
+  this.head = null;   /* Heads of the hash chains or NIL. */
+
+  this.ins_h = 0;       /* hash index of string to be inserted */
+  this.hash_size = 0;   /* number of elements in hash table */
+  this.hash_bits = 0;   /* log2(hash_size) */
+  this.hash_mask = 0;   /* hash_size-1 */
+
+  this.hash_shift = 0;
+  /* Number of bits by which ins_h must be shifted at each input
+   * step. It must be such that after MIN_MATCH steps, the oldest
+   * byte no longer takes part in the hash key, that is:
+   *   hash_shift * MIN_MATCH >= hash_bits
+   */
+
+  this.block_start = 0;
+  /* Window position at the beginning of the current output block. Gets
+   * negative when the window is moved backwards.
+   */
+
+  this.match_length = 0;      /* length of best match */
+  this.prev_match = 0;        /* previous match */
+  this.match_available = 0;   /* set if previous match exists */
+  this.strstart = 0;          /* start of string to insert */
+  this.match_start = 0;       /* start of matching string */
+  this.lookahead = 0;         /* number of valid bytes ahead in window */
+
+  this.prev_length = 0;
+  /* Length of the best match at previous step. Matches not greater than this
+   * are discarded. This is used in the lazy match evaluation.
+   */
+
+  this.max_chain_length = 0;
+  /* To speed up deflation, hash chains are never searched beyond this
+   * length.  A higher limit improves compression ratio but degrades the
+   * speed.
+   */
+
+  this.max_lazy_match = 0;
+  /* Attempt to find a better match only when the current match is strictly
+   * smaller than this value. This mechanism is used only for compression
+   * levels >= 4.
+   */
+  // That's alias to max_lazy_match, don't use directly
+  //this.max_insert_length = 0;
+  /* Insert new strings in the hash table only if the match length is not
+   * greater than this length. This saves time but degrades compression.
+   * max_insert_length is used only for compression levels <= 3.
+   */
+
+  this.level = 0;     /* compression level (1..9) */
+  this.strategy = 0;  /* favor or force Huffman coding*/
+
+  this.good_match = 0;
+  /* Use a faster search when the previous match is longer than this */
+
+  this.nice_match = 0; /* Stop searching when current match exceeds this */
+
+              /* used by trees.c: */
+
+  /* Didn't use ct_data typedef below to suppress compiler warning */
+
+  // struct ct_data_s dyn_ltree[HEAP_SIZE];   /* literal and length tree */
+  // struct ct_data_s dyn_dtree[2*D_CODES+1]; /* distance tree */
+  // struct ct_data_s bl_tree[2*BL_CODES+1];  /* Huffman tree for bit lengths */
+
+  // Use flat array of DOUBLE size, with interleaved fata,
+  // because JS does not support effective
+  this.dyn_ltree  = new utils.Buf16(HEAP_SIZE * 2);
+  this.dyn_dtree  = new utils.Buf16((2 * D_CODES + 1) * 2);
+  this.bl_tree    = new utils.Buf16((2 * BL_CODES + 1) * 2);
+  zero(this.dyn_ltree);
+  zero(this.dyn_dtree);
+  zero(this.bl_tree);
+
+  this.l_desc   = null;         /* desc. for literal tree */
+  this.d_desc   = null;         /* desc. for distance tree */
+  this.bl_desc  = null;         /* desc. for bit length tree */
+
+  //ush bl_count[MAX_BITS+1];
+  this.bl_count = new utils.Buf16(MAX_BITS + 1);
+  /* number of codes at each bit length for an optimal tree */
+
+  //int heap[2*L_CODES+1];      /* heap used to build the Huffman trees */
+  this.heap = new utils.Buf16(2 * L_CODES + 1);  /* heap used to build the Huffman trees */
+  zero(this.heap);
+
+  this.heap_len = 0;               /* number of elements in the heap */
+  this.heap_max = 0;               /* element of largest frequency */
+  /* The sons of heap[n] are heap[2*n] and heap[2*n+1]. heap[0] is not used.
+   * The same heap array is used to build all trees.
+   */
+
+  this.depth = new utils.Buf16(2 * L_CODES + 1); //uch depth[2*L_CODES+1];
+  zero(this.depth);
+  /* Depth of each subtree used as tie breaker for trees of equal frequency
+   */
+
+  this.l_buf = 0;          /* buffer index for literals or lengths */
+
+  this.lit_bufsize = 0;
+  /* Size of match buffer for literals/lengths.  There are 4 reasons for
+   * limiting lit_bufsize to 64K:
+   *   - frequencies can be kept in 16 bit counters
+   *   - if compression is not successful for the first block, all input
+   *     data is still in the window so we can still emit a stored block even
+   *     when input comes from standard input.  (This can also be done for
+   *     all blocks if lit_bufsize is not greater than 32K.)
+   *   - if compression is not successful for a file smaller than 64K, we can
+   *     even emit a stored file instead of a stored block (saving 5 bytes).
+   *     This is applicable only for zip (not gzip or zlib).
+   *   - creating new Huffman trees less frequently may not provide fast
+   *     adaptation to changes in the input data statistics. (Take for
+   *     example a binary file with poorly compressible code followed by
+   *     a highly compressible string table.) Smaller buffer sizes give
+   *     fast adaptation but have of course the overhead of transmitting
+   *     trees more frequently.
+   *   - I can't count above 4
+   */
+
+  this.last_lit = 0;      /* running index in l_buf */
+
+  this.d_buf = 0;
+  /* Buffer index for distances. To simplify the code, d_buf and l_buf have
+   * the same number of elements. To use different lengths, an extra flag
+   * array would be necessary.
+   */
+
+  this.opt_len = 0;       /* bit length of current block with optimal trees */
+  this.static_len = 0;    /* bit length of current block with static trees */
+  this.matches = 0;       /* number of string matches in current block */
+  this.insert = 0;        /* bytes at end of window left to insert */
+
+
+  this.bi_buf = 0;
+  /* Output buffer. bits are inserted starting at the bottom (least
+   * significant bits).
+   */
+  this.bi_valid = 0;
+  /* Number of valid bits in bi_buf.  All bits above the last valid bit
+   * are always zero.
+   */
+
+  // Used for window memory init. We safely ignore it for JS. That makes
+  // sense only for pointers and memory check tools.
+  //this.high_water = 0;
+  /* High water mark offset in window for initialized bytes -- bytes above
+   * this are set to zero in order to avoid memory check warnings when
+   * longest match routines access bytes past the input.  This is then
+   * updated to the new high water mark.
+   */
+}
+
+
+function deflateResetKeep(strm) {
+  var s;
+
+  if (!strm || !strm.state) {
+    return err(strm, Z_STREAM_ERROR);
+  }
+
+  strm.total_in = strm.total_out = 0;
+  strm.data_type = Z_UNKNOWN;
+
+  s = strm.state;
+  s.pending = 0;
+  s.pending_out = 0;
+
+  if (s.wrap < 0) {
+    s.wrap = -s.wrap;
+    /* was made negative by deflate(..., Z_FINISH); */
+  }
+  s.status = (s.wrap ? INIT_STATE : BUSY_STATE);
+  strm.adler = (s.wrap === 2) ?
+    0  // crc32(0, Z_NULL, 0)
+  :
+    1; // adler32(0, Z_NULL, 0)
+  s.last_flush = Z_NO_FLUSH;
+  trees._tr_init(s);
+  return Z_OK;
+}
+
+
+function deflateReset(strm) {
+  var ret = deflateResetKeep(strm);
+  if (ret === Z_OK) {
+    lm_init(strm.state);
+  }
+  return ret;
+}
+
+
+function deflateSetHeader(strm, head) {
+  if (!strm || !strm.state) { return Z_STREAM_ERROR; }
+  if (strm.state.wrap !== 2) { return Z_STREAM_ERROR; }
+  strm.state.gzhead = head;
+  return Z_OK;
+}
+
+
+function deflateInit2(strm, level, method, windowBits, memLevel, strategy) {
+  if (!strm) { // === Z_NULL
+    return Z_STREAM_ERROR;
+  }
+  var wrap = 1;
+
+  if (level === Z_DEFAULT_COMPRESSION) {
+    level = 6;
+  }
+
+  if (windowBits < 0) { /* suppress zlib wrapper */
+    wrap = 0;
+    windowBits = -windowBits;
+  }
+
+  else if (windowBits > 15) {
+    wrap = 2;           /* write gzip wrapper instead */
+    windowBits -= 16;
+  }
+
+
+  if (memLevel < 1 || memLevel > MAX_MEM_LEVEL || method !== Z_DEFLATED ||
+    windowBits < 8 || windowBits > 15 || level < 0 || level > 9 ||
+    strategy < 0 || strategy > Z_FIXED) {
+    return err(strm, Z_STREAM_ERROR);
+  }
+
+
+  if (windowBits === 8) {
+    windowBits = 9;
+  }
+  /* until 256-byte window bug fixed */
+
+  var s = new DeflateState();
+
+  strm.state = s;
+  s.strm = strm;
+
+  s.wrap = wrap;
+  s.gzhead = null;
+  s.w_bits = windowBits;
+  s.w_size = 1 << s.w_bits;
+  s.w_mask = s.w_size - 1;
+
+  s.hash_bits = memLevel + 7;
+  s.hash_size = 1 << s.hash_bits;
+  s.hash_mask = s.hash_size - 1;
+  s.hash_shift = ~~((s.hash_bits + MIN_MATCH - 1) / MIN_MATCH);
+
+  s.window = new utils.Buf8(s.w_size * 2);
+  s.head = new utils.Buf16(s.hash_size);
+  s.prev = new utils.Buf16(s.w_size);
+
+  // Don't need mem init magic for JS.
+  //s.high_water = 0;  /* nothing written to s->window yet */
+
+  s.lit_bufsize = 1 << (memLevel + 6); /* 16K elements by default */
+
+  s.pending_buf_size = s.lit_bufsize * 4;
+
+  //overlay = (ushf *) ZALLOC(strm, s->lit_bufsize, sizeof(ush)+2);
+  //s->pending_buf = (uchf *) overlay;
+  s.pending_buf = new utils.Buf8(s.pending_buf_size);
+
+  // It is offset from `s.pending_buf` (size is `s.lit_bufsize * 2`)
+  //s->d_buf = overlay + s->lit_bufsize/sizeof(ush);
+  s.d_buf = 1 * s.lit_bufsize;
+
+  //s->l_buf = s->pending_buf + (1+sizeof(ush))*s->lit_bufsize;
+  s.l_buf = (1 + 2) * s.lit_bufsize;
+
+  s.level = level;
+  s.strategy = strategy;
+  s.method = method;
+
+  return deflateReset(strm);
+}
+
+function deflateInit(strm, level) {
+  return deflateInit2(strm, level, Z_DEFLATED, MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY);
+}
+
+
+function deflate(strm, flush) {
+  var old_flush, s;
+  var beg, val; // for gzip header write only
+
+  if (!strm || !strm.state ||
+    flush > Z_BLOCK || flush < 0) {
+    return strm ? err(strm, Z_STREAM_ERROR) : Z_STREAM_ERROR;
+  }
+
+  s = strm.state;
+
+  if (!strm.output ||
+      (!strm.input && strm.avail_in !== 0) ||
+      (s.status === FINISH_STATE && flush !== Z_FINISH)) {
+    return err(strm, (strm.avail_out === 0) ? Z_BUF_ERROR : Z_STREAM_ERROR);
+  }
+
+  s.strm = strm; /* just in case */
+  old_flush = s.last_flush;
+  s.last_flush = flush;
+
+  /* Write the header */
+  if (s.status === INIT_STATE) {
+
+    if (s.wrap === 2) { // GZIP header
+      strm.adler = 0;  //crc32(0L, Z_NULL, 0);
+      put_byte(s, 31);
+      put_byte(s, 139);
+      put_byte(s, 8);
+      if (!s.gzhead) { // s->gzhead == Z_NULL
+        put_byte(s, 0);
+        put_byte(s, 0);
+        put_byte(s, 0);
+        put_byte(s, 0);
+        put_byte(s, 0);
+        put_byte(s, s.level === 9 ? 2 :
+                    (s.strategy >= Z_HUFFMAN_ONLY || s.level < 2 ?
+                     4 : 0));
+        put_byte(s, OS_CODE);
+        s.status = BUSY_STATE;
+      }
+      else {
+        put_byte(s, (s.gzhead.text ? 1 : 0) +
+                    (s.gzhead.hcrc ? 2 : 0) +
+                    (!s.gzhead.extra ? 0 : 4) +
+                    (!s.gzhead.name ? 0 : 8) +
+                    (!s.gzhead.comment ? 0 : 16)
+        );
+        put_byte(s, s.gzhead.time & 0xff);
+        put_byte(s, (s.gzhead.time >> 8) & 0xff);
+        put_byte(s, (s.gzhead.time >> 16) & 0xff);
+        put_byte(s, (s.gzhead.time >> 24) & 0xff);
+        put_byte(s, s.level === 9 ? 2 :
+                    (s.strategy >= Z_HUFFMAN_ONLY || s.level < 2 ?
+                     4 : 0));
+        put_byte(s, s.gzhead.os & 0xff);
+        if (s.gzhead.extra && s.gzhead.extra.length) {
+          put_byte(s, s.gzhead.extra.length & 0xff);
+          put_byte(s, (s.gzhead.extra.length >> 8) & 0xff);
+        }
+        if (s.gzhead.hcrc) {
+          strm.adler = crc32(strm.adler, s.pending_buf, s.pending, 0);
+        }
+        s.gzindex = 0;
+        s.status = EXTRA_STATE;
+      }
+    }
+    else // DEFLATE header
+    {
+      var header = (Z_DEFLATED + ((s.w_bits - 8) << 4)) << 8;
+      var level_flags = -1;
+
+      if (s.strategy >= Z_HUFFMAN_ONLY || s.level < 2) {
+        level_flags = 0;
+      } else if (s.level < 6) {
+        level_flags = 1;
+      } else if (s.level === 6) {
+        level_flags = 2;
+      } else {
+        level_flags = 3;
+      }
+      header |= (level_flags << 6);
+      if (s.strstart !== 0) { header |= PRESET_DICT; }
+      header += 31 - (header % 31);
+
+      s.status = BUSY_STATE;
+      putShortMSB(s, header);
+
+      /* Save the adler32 of the preset dictionary: */
+      if (s.strstart !== 0) {
+        putShortMSB(s, strm.adler >>> 16);
+        putShortMSB(s, strm.adler & 0xffff);
+      }
+      strm.adler = 1; // adler32(0L, Z_NULL, 0);
+    }
+  }
+
+//#ifdef GZIP
+  if (s.status === EXTRA_STATE) {
+    if (s.gzhead.extra/* != Z_NULL*/) {
+      beg = s.pending;  /* start of bytes to update crc */
+
+      while (s.gzindex < (s.gzhead.extra.length & 0xffff)) {
+        if (s.pending === s.pending_buf_size) {
+          if (s.gzhead.hcrc && s.pending > beg) {
+            strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+          }
+          flush_pending(strm);
+          beg = s.pending;
+          if (s.pending === s.pending_buf_size) {
+            break;
+          }
+        }
+        put_byte(s, s.gzhead.extra[s.gzindex] & 0xff);
+        s.gzindex++;
+      }
+      if (s.gzhead.hcrc && s.pending > beg) {
+        strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+      }
+      if (s.gzindex === s.gzhead.extra.length) {
+        s.gzindex = 0;
+        s.status = NAME_STATE;
+      }
+    }
+    else {
+      s.status = NAME_STATE;
+    }
+  }
+  if (s.status === NAME_STATE) {
+    if (s.gzhead.name/* != Z_NULL*/) {
+      beg = s.pending;  /* start of bytes to update crc */
+      //int val;
+
+      do {
+        if (s.pending === s.pending_buf_size) {
+          if (s.gzhead.hcrc && s.pending > beg) {
+            strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+          }
+          flush_pending(strm);
+          beg = s.pending;
+          if (s.pending === s.pending_buf_size) {
+            val = 1;
+            break;
+          }
+        }
+        // JS specific: little magic to add zero terminator to end of string
+        if (s.gzindex < s.gzhead.name.length) {
+          val = s.gzhead.name.charCodeAt(s.gzindex++) & 0xff;
+        } else {
+          val = 0;
+        }
+        put_byte(s, val);
+      } while (val !== 0);
+
+      if (s.gzhead.hcrc && s.pending > beg) {
+        strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+      }
+      if (val === 0) {
+        s.gzindex = 0;
+        s.status = COMMENT_STATE;
+      }
+    }
+    else {
+      s.status = COMMENT_STATE;
+    }
+  }
+  if (s.status === COMMENT_STATE) {
+    if (s.gzhead.comment/* != Z_NULL*/) {
+      beg = s.pending;  /* start of bytes to update crc */
+      //int val;
+
+      do {
+        if (s.pending === s.pending_buf_size) {
+          if (s.gzhead.hcrc && s.pending > beg) {
+            strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+          }
+          flush_pending(strm);
+          beg = s.pending;
+          if (s.pending === s.pending_buf_size) {
+            val = 1;
+            break;
+          }
+        }
+        // JS specific: little magic to add zero terminator to end of string
+        if (s.gzindex < s.gzhead.comment.length) {
+          val = s.gzhead.comment.charCodeAt(s.gzindex++) & 0xff;
+        } else {
+          val = 0;
+        }
+        put_byte(s, val);
+      } while (val !== 0);
+
+      if (s.gzhead.hcrc && s.pending > beg) {
+        strm.adler = crc32(strm.adler, s.pending_buf, s.pending - beg, beg);
+      }
+      if (val === 0) {
+        s.status = HCRC_STATE;
+      }
+    }
+    else {
+      s.status = HCRC_STATE;
+    }
+  }
+  if (s.status === HCRC_STATE) {
+    if (s.gzhead.hcrc) {
+      if (s.pending + 2 > s.pending_buf_size) {
+        flush_pending(strm);
+      }
+      if (s.pending + 2 <= s.pending_buf_size) {
+        put_byte(s, strm.adler & 0xff);
+        put_byte(s, (strm.adler >> 8) & 0xff);
+        strm.adler = 0; //crc32(0L, Z_NULL, 0);
+        s.status = BUSY_STATE;
+      }
+    }
+    else {
+      s.status = BUSY_STATE;
+    }
+  }
+//#endif
+
+  /* Flush as much pending output as possible */
+  if (s.pending !== 0) {
+    flush_pending(strm);
+    if (strm.avail_out === 0) {
+      /* Since avail_out is 0, deflate will be called again with
+       * more output space, but possibly with both pending and
+       * avail_in equal to zero. There won't be anything to do,
+       * but this is not an error situation so make sure we
+       * return OK instead of BUF_ERROR at next call of deflate:
+       */
+      s.last_flush = -1;
+      return Z_OK;
+    }
+
+    /* Make sure there is something to do and avoid duplicate consecutive
+     * flushes. For repeated and useless calls with Z_FINISH, we keep
+     * returning Z_STREAM_END instead of Z_BUF_ERROR.
+     */
+  } else if (strm.avail_in === 0 && rank(flush) <= rank(old_flush) &&
+    flush !== Z_FINISH) {
+    return err(strm, Z_BUF_ERROR);
+  }
+
+  /* User must not provide more input after the first FINISH: */
+  if (s.status === FINISH_STATE && strm.avail_in !== 0) {
+    return err(strm, Z_BUF_ERROR);
+  }
+
+  /* Start a new block or continue the current one.
+   */
+  if (strm.avail_in !== 0 || s.lookahead !== 0 ||
+    (flush !== Z_NO_FLUSH && s.status !== FINISH_STATE)) {
+    var bstate = (s.strategy === Z_HUFFMAN_ONLY) ? deflate_huff(s, flush) :
+      (s.strategy === Z_RLE ? deflate_rle(s, flush) :
+        configuration_table[s.level].func(s, flush));
+
+    if (bstate === BS_FINISH_STARTED || bstate === BS_FINISH_DONE) {
+      s.status = FINISH_STATE;
+    }
+    if (bstate === BS_NEED_MORE || bstate === BS_FINISH_STARTED) {
+      if (strm.avail_out === 0) {
+        s.last_flush = -1;
+        /* avoid BUF_ERROR next call, see above */
+      }
+      return Z_OK;
+      /* If flush != Z_NO_FLUSH && avail_out == 0, the next call
+       * of deflate should use the same flush parameter to make sure
+       * that the flush is complete. So we don't have to output an
+       * empty block here, this will be done at next call. This also
+       * ensures that for a very small output buffer, we emit at most
+       * one empty block.
+       */
+    }
+    if (bstate === BS_BLOCK_DONE) {
+      if (flush === Z_PARTIAL_FLUSH) {
+        trees._tr_align(s);
+      }
+      else if (flush !== Z_BLOCK) { /* FULL_FLUSH or SYNC_FLUSH */
+
+        trees._tr_stored_block(s, 0, 0, false);
+        /* For a full flush, this empty block will be recognized
+         * as a special marker by inflate_sync().
+         */
+        if (flush === Z_FULL_FLUSH) {
+          /*** CLEAR_HASH(s); ***/             /* forget history */
+          zero(s.head); // Fill with NIL (= 0);
+
+          if (s.lookahead === 0) {
+            s.strstart = 0;
+            s.block_start = 0;
+            s.insert = 0;
+          }
+        }
+      }
+      flush_pending(strm);
+      if (strm.avail_out === 0) {
+        s.last_flush = -1; /* avoid BUF_ERROR at next call, see above */
+        return Z_OK;
+      }
+    }
+  }
+  //Assert(strm->avail_out > 0, "bug2");
+  //if (strm.avail_out <= 0) { throw new Error("bug2");}
+
+  if (flush !== Z_FINISH) { return Z_OK; }
+  if (s.wrap <= 0) { return Z_STREAM_END; }
+
+  /* Write the trailer */
+  if (s.wrap === 2) {
+    put_byte(s, strm.adler & 0xff);
+    put_byte(s, (strm.adler >> 8) & 0xff);
+    put_byte(s, (strm.adler >> 16) & 0xff);
+    put_byte(s, (strm.adler >> 24) & 0xff);
+    put_byte(s, strm.total_in & 0xff);
+    put_byte(s, (strm.total_in >> 8) & 0xff);
+    put_byte(s, (strm.total_in >> 16) & 0xff);
+    put_byte(s, (strm.total_in >> 24) & 0xff);
+  }
+  else
+  {
+    putShortMSB(s, strm.adler >>> 16);
+    putShortMSB(s, strm.adler & 0xffff);
+  }
+
+  flush_pending(strm);
+  /* If avail_out is zero, the application will call deflate again
+   * to flush the rest.
+   */
+  if (s.wrap > 0) { s.wrap = -s.wrap; }
+  /* write the trailer only once! */
+  return s.pending !== 0 ? Z_OK : Z_STREAM_END;
+}
+
+function deflateEnd(strm) {
+  var status;
+
+  if (!strm/*== Z_NULL*/ || !strm.state/*== Z_NULL*/) {
+    return Z_STREAM_ERROR;
+  }
+
+  status = strm.state.status;
+  if (status !== INIT_STATE &&
+    status !== EXTRA_STATE &&
+    status !== NAME_STATE &&
+    status !== COMMENT_STATE &&
+    status !== HCRC_STATE &&
+    status !== BUSY_STATE &&
+    status !== FINISH_STATE
+  ) {
+    return err(strm, Z_STREAM_ERROR);
+  }
+
+  strm.state = null;
+
+  return status === BUSY_STATE ? err(strm, Z_DATA_ERROR) : Z_OK;
+}
+
+
+/* =========================================================================
+ * Initializes the compression dictionary from the given byte
+ * sequence without producing any compressed output.
+ */
+function deflateSetDictionary(strm, dictionary) {
+  var dictLength = dictionary.length;
+
+  var s;
+  var str, n;
+  var wrap;
+  var avail;
+  var next;
+  var input;
+  var tmpDict;
+
+  if (!strm/*== Z_NULL*/ || !strm.state/*== Z_NULL*/) {
+    return Z_STREAM_ERROR;
+  }
+
+  s = strm.state;
+  wrap = s.wrap;
+
+  if (wrap === 2 || (wrap === 1 && s.status !== INIT_STATE) || s.lookahead) {
+    return Z_STREAM_ERROR;
+  }
+
+  /* when using zlib wrappers, compute Adler-32 for provided dictionary */
+  if (wrap === 1) {
+    /* adler32(strm->adler, dictionary, dictLength); */
+    strm.adler = adler32(strm.adler, dictionary, dictLength, 0);
+  }
+
+  s.wrap = 0;   /* avoid computing Adler-32 in read_buf */
+
+  /* if dictionary would fill window, just replace the history */
+  if (dictLength >= s.w_size) {
+    if (wrap === 0) {            /* already empty otherwise */
+      /*** CLEAR_HASH(s); ***/
+      zero(s.head); // Fill with NIL (= 0);
+      s.strstart = 0;
+      s.block_start = 0;
+      s.insert = 0;
+    }
+    /* use the tail */
+    // dictionary = dictionary.slice(dictLength - s.w_size);
+    tmpDict = new utils.Buf8(s.w_size);
+    utils.arraySet(tmpDict, dictionary, dictLength - s.w_size, s.w_size, 0);
+    dictionary = tmpDict;
+    dictLength = s.w_size;
+  }
+  /* insert dictionary into window and hash */
+  avail = strm.avail_in;
+  next = strm.next_in;
+  input = strm.input;
+  strm.avail_in = dictLength;
+  strm.next_in = 0;
+  strm.input = dictionary;
+  fill_window(s);
+  while (s.lookahead >= MIN_MATCH) {
+    str = s.strstart;
+    n = s.lookahead - (MIN_MATCH - 1);
+    do {
+      /* UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]); */
+      s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + MIN_MATCH - 1]) & s.hash_mask;
+
+      s.prev[str & s.w_mask] = s.head[s.ins_h];
+
+      s.head[s.ins_h] = str;
+      str++;
+    } while (--n);
+    s.strstart = str;
+    s.lookahead = MIN_MATCH - 1;
+    fill_window(s);
+  }
+  s.strstart += s.lookahead;
+  s.block_start = s.strstart;
+  s.insert = s.lookahead;
+  s.lookahead = 0;
+  s.match_length = s.prev_length = MIN_MATCH - 1;
+  s.match_available = 0;
+  strm.next_in = next;
+  strm.input = input;
+  strm.avail_in = avail;
+  s.wrap = wrap;
+  return Z_OK;
+}
+
+
+exports.deflateInit = deflateInit;
+exports.deflateInit2 = deflateInit2;
+exports.deflateReset = deflateReset;
+exports.deflateResetKeep = deflateResetKeep;
+exports.deflateSetHeader = deflateSetHeader;
+exports.deflate = deflate;
+exports.deflateEnd = deflateEnd;
+exports.deflateSetDictionary = deflateSetDictionary;
+exports.deflateInfo = 'pako deflate (from Nodeca project)';
+
+/* Not implemented
+exports.deflateBound = deflateBound;
+exports.deflateCopy = deflateCopy;
+exports.deflateParams = deflateParams;
+exports.deflatePending = deflatePending;
+exports.deflatePrime = deflatePrime;
+exports.deflateTune = deflateTune;
+*/
+
+},{"../utils/common":36,"./adler32":37,"./crc32":39,"./messages":44,"./trees":45}],41:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+// See state defs from inflate.js
+var BAD = 30;       /* got a data error -- remain here until reset */
+var TYPE = 12;      /* i: waiting for type bits, including last-flag bit */
+
+/*
+   Decode literal, length, and distance codes and write out the resulting
+   literal and match bytes until either not enough input or output is
+   available, an end-of-block is encountered, or a data error is encountered.
+   When large enough input and output buffers are supplied to inflate(), for
+   example, a 16K input buffer and a 64K output buffer, more than 95% of the
+   inflate execution time is spent in this routine.
+
+   Entry assumptions:
+
+        state.mode === LEN
+        strm.avail_in >= 6
+        strm.avail_out >= 258
+        start >= strm.avail_out
+        state.bits < 8
+
+   On return, state.mode is one of:
+
+        LEN -- ran out of enough output space or enough available input
+        TYPE -- reached end of block code, inflate() to interpret next block
+        BAD -- error in block data
+
+   Notes:
+
+    - The maximum input bits used by a length/distance pair is 15 bits for the
+      length code, 5 bits for the length extra, 15 bits for the distance code,
+      and 13 bits for the distance extra.  This totals 48 bits, or six bytes.
+      Therefore if strm.avail_in >= 6, then there is enough input to avoid
+      checking for available input while decoding.
+
+    - The maximum bytes that a single length/distance pair can output is 258
+      bytes, which is the maximum length that can be coded.  inflate_fast()
+      requires strm.avail_out >= 258 for each loop to avoid checking for
+      output space.
+ */
+module.exports = function inflate_fast(strm, start) {
+  var state;
+  var _in;                    /* local strm.input */
+  var last;                   /* have enough input while in < last */
+  var _out;                   /* local strm.output */
+  var beg;                    /* inflate()'s initial strm.output */
+  var end;                    /* while out < end, enough space available */
+//#ifdef INFLATE_STRICT
+  var dmax;                   /* maximum distance from zlib header */
+//#endif
+  var wsize;                  /* window size or zero if not using window */
+  var whave;                  /* valid bytes in the window */
+  var wnext;                  /* window write index */
+  // Use `s_window` instead `window`, avoid conflict with instrumentation tools
+  var s_window;               /* allocated sliding window, if wsize != 0 */
+  var hold;                   /* local strm.hold */
+  var bits;                   /* local strm.bits */
+  var lcode;                  /* local strm.lencode */
+  var dcode;                  /* local strm.distcode */
+  var lmask;                  /* mask for first level of length codes */
+  var dmask;                  /* mask for first level of distance codes */
+  var here;                   /* retrieved table entry */
+  var op;                     /* code bits, operation, extra bits, or */
+                              /*  window position, window bytes to copy */
+  var len;                    /* match length, unused bytes */
+  var dist;                   /* match distance */
+  var from;                   /* where to copy match from */
+  var from_source;
+
+
+  var input, output; // JS specific, because we have no pointers
+
+  /* copy state to local variables */
+  state = strm.state;
+  //here = state.here;
+  _in = strm.next_in;
+  input = strm.input;
+  last = _in + (strm.avail_in - 5);
+  _out = strm.next_out;
+  output = strm.output;
+  beg = _out - (start - strm.avail_out);
+  end = _out + (strm.avail_out - 257);
+//#ifdef INFLATE_STRICT
+  dmax = state.dmax;
+//#endif
+  wsize = state.wsize;
+  whave = state.whave;
+  wnext = state.wnext;
+  s_window = state.window;
+  hold = state.hold;
+  bits = state.bits;
+  lcode = state.lencode;
+  dcode = state.distcode;
+  lmask = (1 << state.lenbits) - 1;
+  dmask = (1 << state.distbits) - 1;
+
+
+  /* decode literals and length/distances until end-of-block or not enough
+     input data or output space */
+
+  top:
+  do {
+    if (bits < 15) {
+      hold += input[_in++] << bits;
+      bits += 8;
+      hold += input[_in++] << bits;
+      bits += 8;
+    }
+
+    here = lcode[hold & lmask];
+
+    dolen:
+    for (;;) { // Goto emulation
+      op = here >>> 24/*here.bits*/;
+      hold >>>= op;
+      bits -= op;
+      op = (here >>> 16) & 0xff/*here.op*/;
+      if (op === 0) {                          /* literal */
+        //Tracevv((stderr, here.val >= 0x20 && here.val < 0x7f ?
+        //        "inflate:         literal '%c'\n" :
+        //        "inflate:         literal 0x%02x\n", here.val));
+        output[_out++] = here & 0xffff/*here.val*/;
+      }
+      else if (op & 16) {                     /* length base */
+        len = here & 0xffff/*here.val*/;
+        op &= 15;                           /* number of extra bits */
+        if (op) {
+          if (bits < op) {
+            hold += input[_in++] << bits;
+            bits += 8;
+          }
+          len += hold & ((1 << op) - 1);
+          hold >>>= op;
+          bits -= op;
+        }
+        //Tracevv((stderr, "inflate:         length %u\n", len));
+        if (bits < 15) {
+          hold += input[_in++] << bits;
+          bits += 8;
+          hold += input[_in++] << bits;
+          bits += 8;
+        }
+        here = dcode[hold & dmask];
+
+        dodist:
+        for (;;) { // goto emulation
+          op = here >>> 24/*here.bits*/;
+          hold >>>= op;
+          bits -= op;
+          op = (here >>> 16) & 0xff/*here.op*/;
+
+          if (op & 16) {                      /* distance base */
+            dist = here & 0xffff/*here.val*/;
+            op &= 15;                       /* number of extra bits */
+            if (bits < op) {
+              hold += input[_in++] << bits;
+              bits += 8;
+              if (bits < op) {
+                hold += input[_in++] << bits;
+                bits += 8;
+              }
+            }
+            dist += hold & ((1 << op) - 1);
+//#ifdef INFLATE_STRICT
+            if (dist > dmax) {
+              strm.msg = 'invalid distance too far back';
+              state.mode = BAD;
+              break top;
+            }
+//#endif
+            hold >>>= op;
+            bits -= op;
+            //Tracevv((stderr, "inflate:         distance %u\n", dist));
+            op = _out - beg;                /* max distance in output */
+            if (dist > op) {                /* see if copy from window */
+              op = dist - op;               /* distance back in window */
+              if (op > whave) {
+                if (state.sane) {
+                  strm.msg = 'invalid distance too far back';
+                  state.mode = BAD;
+                  break top;
+                }
+
+// (!) This block is disabled in zlib defaults,
+// don't enable it for binary compatibility
+//#ifdef INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR
+//                if (len <= op - whave) {
+//                  do {
+//                    output[_out++] = 0;
+//                  } while (--len);
+//                  continue top;
+//                }
+//                len -= op - whave;
+//                do {
+//                  output[_out++] = 0;
+//                } while (--op > whave);
+//                if (op === 0) {
+//                  from = _out - dist;
+//                  do {
+//                    output[_out++] = output[from++];
+//                  } while (--len);
+//                  continue top;
+//                }
+//#endif
+              }
+              from = 0; // window index
+              from_source = s_window;
+              if (wnext === 0) {           /* very common case */
+                from += wsize - op;
+                if (op < len) {         /* some from window */
+                  len -= op;
+                  do {
+                    output[_out++] = s_window[from++];
+                  } while (--op);
+                  from = _out - dist;  /* rest from output */
+                  from_source = output;
+                }
+              }
+              else if (wnext < op) {      /* wrap around window */
+                from += wsize + wnext - op;
+                op -= wnext;
+                if (op < len) {         /* some from end of window */
+                  len -= op;
+                  do {
+                    output[_out++] = s_window[from++];
+                  } while (--op);
+                  from = 0;
+                  if (wnext < len) {  /* some from start of window */
+                    op = wnext;
+                    len -= op;
+                    do {
+                      output[_out++] = s_window[from++];
+                    } while (--op);
+                    from = _out - dist;      /* rest from output */
+                    from_source = output;
+                  }
+                }
+              }
+              else {                      /* contiguous in window */
+                from += wnext - op;
+                if (op < len) {         /* some from window */
+                  len -= op;
+                  do {
+                    output[_out++] = s_window[from++];
+                  } while (--op);
+                  from = _out - dist;  /* rest from output */
+                  from_source = output;
+                }
+              }
+              while (len > 2) {
+                output[_out++] = from_source[from++];
+                output[_out++] = from_source[from++];
+                output[_out++] = from_source[from++];
+                len -= 3;
+              }
+              if (len) {
+                output[_out++] = from_source[from++];
+                if (len > 1) {
+                  output[_out++] = from_source[from++];
+                }
+              }
+            }
+            else {
+              from = _out - dist;          /* copy direct from output */
+              do {                        /* minimum length is three */
+                output[_out++] = output[from++];
+                output[_out++] = output[from++];
+                output[_out++] = output[from++];
+                len -= 3;
+              } while (len > 2);
+              if (len) {
+                output[_out++] = output[from++];
+                if (len > 1) {
+                  output[_out++] = output[from++];
+                }
+              }
+            }
+          }
+          else if ((op & 64) === 0) {          /* 2nd level distance code */
+            here = dcode[(here & 0xffff)/*here.val*/ + (hold & ((1 << op) - 1))];
+            continue dodist;
+          }
+          else {
+            strm.msg = 'invalid distance code';
+            state.mode = BAD;
+            break top;
+          }
+
+          break; // need to emulate goto via "continue"
+        }
+      }
+      else if ((op & 64) === 0) {              /* 2nd level length code */
+        here = lcode[(here & 0xffff)/*here.val*/ + (hold & ((1 << op) - 1))];
+        continue dolen;
+      }
+      else if (op & 32) {                     /* end-of-block */
+        //Tracevv((stderr, "inflate:         end of block\n"));
+        state.mode = TYPE;
+        break top;
+      }
+      else {
+        strm.msg = 'invalid literal/length code';
+        state.mode = BAD;
+        break top;
+      }
+
+      break; // need to emulate goto via "continue"
+    }
+  } while (_in < last && _out < end);
+
+  /* return unused bytes (on entry, bits < 8, so in won't go too far back) */
+  len = bits >> 3;
+  _in -= len;
+  bits -= len << 3;
+  hold &= (1 << bits) - 1;
+
+  /* update state and return */
+  strm.next_in = _in;
+  strm.next_out = _out;
+  strm.avail_in = (_in < last ? 5 + (last - _in) : 5 - (_in - last));
+  strm.avail_out = (_out < end ? 257 + (end - _out) : 257 - (_out - end));
+  state.hold = hold;
+  state.bits = bits;
+  return;
+};
+
+},{}],42:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+var utils         = require('../utils/common');
+var adler32       = require('./adler32');
+var crc32         = require('./crc32');
+var inflate_fast  = require('./inffast');
+var inflate_table = require('./inftrees');
+
+var CODES = 0;
+var LENS = 1;
+var DISTS = 2;
+
+/* Public constants ==========================================================*/
+/* ===========================================================================*/
+
+
+/* Allowed flush values; see deflate() and inflate() below for details */
+//var Z_NO_FLUSH      = 0;
+//var Z_PARTIAL_FLUSH = 1;
+//var Z_SYNC_FLUSH    = 2;
+//var Z_FULL_FLUSH    = 3;
+var Z_FINISH        = 4;
+var Z_BLOCK         = 5;
+var Z_TREES         = 6;
+
+
+/* Return codes for the compression/decompression functions. Negative values
+ * are errors, positive values are used for special but normal events.
+ */
+var Z_OK            = 0;
+var Z_STREAM_END    = 1;
+var Z_NEED_DICT     = 2;
+//var Z_ERRNO         = -1;
+var Z_STREAM_ERROR  = -2;
+var Z_DATA_ERROR    = -3;
+var Z_MEM_ERROR     = -4;
+var Z_BUF_ERROR     = -5;
+//var Z_VERSION_ERROR = -6;
+
+/* The deflate compression method */
+var Z_DEFLATED  = 8;
+
+
+/* STATES ====================================================================*/
+/* ===========================================================================*/
+
+
+var    HEAD = 1;       /* i: waiting for magic header */
+var    FLAGS = 2;      /* i: waiting for method and flags (gzip) */
+var    TIME = 3;       /* i: waiting for modification time (gzip) */
+var    OS = 4;         /* i: waiting for extra flags and operating system (gzip) */
+var    EXLEN = 5;      /* i: waiting for extra length (gzip) */
+var    EXTRA = 6;      /* i: waiting for extra bytes (gzip) */
+var    NAME = 7;       /* i: waiting for end of file name (gzip) */
+var    COMMENT = 8;    /* i: waiting for end of comment (gzip) */
+var    HCRC = 9;       /* i: waiting for header crc (gzip) */
+var    DICTID = 10;    /* i: waiting for dictionary check value */
+var    DICT = 11;      /* waiting for inflateSetDictionary() call */
+var        TYPE = 12;      /* i: waiting for type bits, including last-flag bit */
+var        TYPEDO = 13;    /* i: same, but skip check to exit inflate on new block */
+var        STORED = 14;    /* i: waiting for stored size (length and complement) */
+var        COPY_ = 15;     /* i/o: same as COPY below, but only first time in */
+var        COPY = 16;      /* i/o: waiting for input or output to copy stored block */
+var        TABLE = 17;     /* i: waiting for dynamic block table lengths */
+var        LENLENS = 18;   /* i: waiting for code length code lengths */
+var        CODELENS = 19;  /* i: waiting for length/lit and distance code lengths */
+var            LEN_ = 20;      /* i: same as LEN below, but only first time in */
+var            LEN = 21;       /* i: waiting for length/lit/eob code */
+var            LENEXT = 22;    /* i: waiting for length extra bits */
+var            DIST = 23;      /* i: waiting for distance code */
+var            DISTEXT = 24;   /* i: waiting for distance extra bits */
+var            MATCH = 25;     /* o: waiting for output space to copy string */
+var            LIT = 26;       /* o: waiting for output space to write literal */
+var    CHECK = 27;     /* i: waiting for 32-bit check value */
+var    LENGTH = 28;    /* i: waiting for 32-bit length (gzip) */
+var    DONE = 29;      /* finished check, done -- remain here until reset */
+var    BAD = 30;       /* got a data error -- remain here until reset */
+var    MEM = 31;       /* got an inflate() memory error -- remain here until reset */
+var    SYNC = 32;      /* looking for synchronization bytes to restart inflate() */
+
+/* ===========================================================================*/
+
+
+
+var ENOUGH_LENS = 852;
+var ENOUGH_DISTS = 592;
+//var ENOUGH =  (ENOUGH_LENS+ENOUGH_DISTS);
+
+var MAX_WBITS = 15;
+/* 32K LZ77 window */
+var DEF_WBITS = MAX_WBITS;
+
+
+function zswap32(q) {
+  return  (((q >>> 24) & 0xff) +
+          ((q >>> 8) & 0xff00) +
+          ((q & 0xff00) << 8) +
+          ((q & 0xff) << 24));
+}
+
+
+function InflateState() {
+  this.mode = 0;             /* current inflate mode */
+  this.last = false;          /* true if processing last block */
+  this.wrap = 0;              /* bit 0 true for zlib, bit 1 true for gzip */
+  this.havedict = false;      /* true if dictionary provided */
+  this.flags = 0;             /* gzip header method and flags (0 if zlib) */
+  this.dmax = 0;              /* zlib header max distance (INFLATE_STRICT) */
+  this.check = 0;             /* protected copy of check value */
+  this.total = 0;             /* protected copy of output count */
+  // TODO: may be {}
+  this.head = null;           /* where to save gzip header information */
+
+  /* sliding window */
+  this.wbits = 0;             /* log base 2 of requested window size */
+  this.wsize = 0;             /* window size or zero if not using window */
+  this.whave = 0;             /* valid bytes in the window */
+  this.wnext = 0;             /* window write index */
+  this.window = null;         /* allocated sliding window, if needed */
+
+  /* bit accumulator */
+  this.hold = 0;              /* input bit accumulator */
+  this.bits = 0;              /* number of bits in "in" */
+
+  /* for string and stored block copying */
+  this.length = 0;            /* literal or length of data to copy */
+  this.offset = 0;            /* distance back to copy string from */
+
+  /* for table and code decoding */
+  this.extra = 0;             /* extra bits needed */
+
+  /* fixed and dynamic code tables */
+  this.lencode = null;          /* starting table for length/literal codes */
+  this.distcode = null;         /* starting table for distance codes */
+  this.lenbits = 0;           /* index bits for lencode */
+  this.distbits = 0;          /* index bits for distcode */
+
+  /* dynamic table building */
+  this.ncode = 0;             /* number of code length code lengths */
+  this.nlen = 0;              /* number of length code lengths */
+  this.ndist = 0;             /* number of distance code lengths */
+  this.have = 0;              /* number of code lengths in lens[] */
+  this.next = null;              /* next available space in codes[] */
+
+  this.lens = new utils.Buf16(320); /* temporary storage for code lengths */
+  this.work = new utils.Buf16(288); /* work area for code table building */
+
+  /*
+   because we don't have pointers in js, we use lencode and distcode directly
+   as buffers so we don't need codes
+  */
+  //this.codes = new utils.Buf32(ENOUGH);       /* space for code tables */
+  this.lendyn = null;              /* dynamic table for length/literal codes (JS specific) */
+  this.distdyn = null;             /* dynamic table for distance codes (JS specific) */
+  this.sane = 0;                   /* if false, allow invalid distance too far */
+  this.back = 0;                   /* bits back of last unprocessed length/lit */
+  this.was = 0;                    /* initial length of match */
+}
+
+function inflateResetKeep(strm) {
+  var state;
+
+  if (!strm || !strm.state) { return Z_STREAM_ERROR; }
+  state = strm.state;
+  strm.total_in = strm.total_out = state.total = 0;
+  strm.msg = ''; /*Z_NULL*/
+  if (state.wrap) {       /* to support ill-conceived Java test suite */
+    strm.adler = state.wrap & 1;
+  }
+  state.mode = HEAD;
+  state.last = 0;
+  state.havedict = 0;
+  state.dmax = 32768;
+  state.head = null/*Z_NULL*/;
+  state.hold = 0;
+  state.bits = 0;
+  //state.lencode = state.distcode = state.next = state.codes;
+  state.lencode = state.lendyn = new utils.Buf32(ENOUGH_LENS);
+  state.distcode = state.distdyn = new utils.Buf32(ENOUGH_DISTS);
+
+  state.sane = 1;
+  state.back = -1;
+  //Tracev((stderr, "inflate: reset\n"));
+  return Z_OK;
+}
+
+function inflateReset(strm) {
+  var state;
+
+  if (!strm || !strm.state) { return Z_STREAM_ERROR; }
+  state = strm.state;
+  state.wsize = 0;
+  state.whave = 0;
+  state.wnext = 0;
+  return inflateResetKeep(strm);
+
+}
+
+function inflateReset2(strm, windowBits) {
+  var wrap;
+  var state;
+
+  /* get the state */
+  if (!strm || !strm.state) { return Z_STREAM_ERROR; }
+  state = strm.state;
+
+  /* extract wrap request from windowBits parameter */
+  if (windowBits < 0) {
+    wrap = 0;
+    windowBits = -windowBits;
+  }
+  else {
+    wrap = (windowBits >> 4) + 1;
+    if (windowBits < 48) {
+      windowBits &= 15;
+    }
+  }
+
+  /* set number of window bits, free window if different */
+  if (windowBits && (windowBits < 8 || windowBits > 15)) {
+    return Z_STREAM_ERROR;
+  }
+  if (state.window !== null && state.wbits !== windowBits) {
+    state.window = null;
+  }
+
+  /* update state and reset the rest of it */
+  state.wrap = wrap;
+  state.wbits = windowBits;
+  return inflateReset(strm);
+}
+
+function inflateInit2(strm, windowBits) {
+  var ret;
+  var state;
+
+  if (!strm) { return Z_STREAM_ERROR; }
+  //strm.msg = Z_NULL;                 /* in case we return an error */
+
+  state = new InflateState();
+
+  //if (state === Z_NULL) return Z_MEM_ERROR;
+  //Tracev((stderr, "inflate: allocated\n"));
+  strm.state = state;
+  state.window = null/*Z_NULL*/;
+  ret = inflateReset2(strm, windowBits);
+  if (ret !== Z_OK) {
+    strm.state = null/*Z_NULL*/;
+  }
+  return ret;
+}
+
+function inflateInit(strm) {
+  return inflateInit2(strm, DEF_WBITS);
+}
+
+
+/*
+ Return state with length and distance decoding tables and index sizes set to
+ fixed code decoding.  Normally this returns fixed tables from inffixed.h.
+ If BUILDFIXED is defined, then instead this routine builds the tables the
+ first time it's called, and returns those tables the first time and
+ thereafter.  This reduces the size of the code by about 2K bytes, in
+ exchange for a little execution time.  However, BUILDFIXED should not be
+ used for threaded applications, since the rewriting of the tables and virgin
+ may not be thread-safe.
+ */
+var virgin = true;
+
+var lenfix, distfix; // We have no pointers in JS, so keep tables separate
+
+function fixedtables(state) {
+  /* build fixed huffman tables if first call (may not be thread safe) */
+  if (virgin) {
+    var sym;
+
+    lenfix = new utils.Buf32(512);
+    distfix = new utils.Buf32(32);
+
+    /* literal/length table */
+    sym = 0;
+    while (sym < 144) { state.lens[sym++] = 8; }
+    while (sym < 256) { state.lens[sym++] = 9; }
+    while (sym < 280) { state.lens[sym++] = 7; }
+    while (sym < 288) { state.lens[sym++] = 8; }
+
+    inflate_table(LENS,  state.lens, 0, 288, lenfix,   0, state.work, { bits: 9 });
+
+    /* distance table */
+    sym = 0;
+    while (sym < 32) { state.lens[sym++] = 5; }
+
+    inflate_table(DISTS, state.lens, 0, 32,   distfix, 0, state.work, { bits: 5 });
+
+    /* do this just once */
+    virgin = false;
+  }
+
+  state.lencode = lenfix;
+  state.lenbits = 9;
+  state.distcode = distfix;
+  state.distbits = 5;
+}
+
+
+/*
+ Update the window with the last wsize (normally 32K) bytes written before
+ returning.  If window does not exist yet, create it.  This is only called
+ when a window is already in use, or when output has been written during this
+ inflate call, but the end of the deflate stream has not been reached yet.
+ It is also called to create a window for dictionary data when a dictionary
+ is loaded.
+
+ Providing output buffers larger than 32K to inflate() should provide a speed
+ advantage, since only the last 32K of output is copied to the sliding window
+ upon return from inflate(), and since all distances after the first 32K of
+ output will fall in the output data, making match copies simpler and faster.
+ The advantage may be dependent on the size of the processor's data caches.
+ */
+function updatewindow(strm, src, end, copy) {
+  var dist;
+  var state = strm.state;
+
+  /* if it hasn't been done already, allocate space for the window */
+  if (state.window === null) {
+    state.wsize = 1 << state.wbits;
+    state.wnext = 0;
+    state.whave = 0;
+
+    state.window = new utils.Buf8(state.wsize);
+  }
+
+  /* copy state->wsize or less output bytes into the circular window */
+  if (copy >= state.wsize) {
+    utils.arraySet(state.window, src, end - state.wsize, state.wsize, 0);
+    state.wnext = 0;
+    state.whave = state.wsize;
+  }
+  else {
+    dist = state.wsize - state.wnext;
+    if (dist > copy) {
+      dist = copy;
+    }
+    //zmemcpy(state->window + state->wnext, end - copy, dist);
+    utils.arraySet(state.window, src, end - copy, dist, state.wnext);
+    copy -= dist;
+    if (copy) {
+      //zmemcpy(state->window, end - copy, copy);
+      utils.arraySet(state.window, src, end - copy, copy, 0);
+      state.wnext = copy;
+      state.whave = state.wsize;
+    }
+    else {
+      state.wnext += dist;
+      if (state.wnext === state.wsize) { state.wnext = 0; }
+      if (state.whave < state.wsize) { state.whave += dist; }
+    }
+  }
+  return 0;
+}
+
+function inflate(strm, flush) {
+  var state;
+  var input, output;          // input/output buffers
+  var next;                   /* next input INDEX */
+  var put;                    /* next output INDEX */
+  var have, left;             /* available input and output */
+  var hold;                   /* bit buffer */
+  var bits;                   /* bits in bit buffer */
+  var _in, _out;              /* save starting available input and output */
+  var copy;                   /* number of stored or match bytes to copy */
+  var from;                   /* where to copy match bytes from */
+  var from_source;
+  var here = 0;               /* current decoding table entry */
+  var here_bits, here_op, here_val; // paked "here" denormalized (JS specific)
+  //var last;                   /* parent table entry */
+  var last_bits, last_op, last_val; // paked "last" denormalized (JS specific)
+  var len;                    /* length to copy for repeats, bits to drop */
+  var ret;                    /* return code */
+  var hbuf = new utils.Buf8(4);    /* buffer for gzip header crc calculation */
+  var opts;
+
+  var n; // temporary var for NEED_BITS
+
+  var order = /* permutation of code lengths */
+    [ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 ];
+
+
+  if (!strm || !strm.state || !strm.output ||
+      (!strm.input && strm.avail_in !== 0)) {
+    return Z_STREAM_ERROR;
+  }
+
+  state = strm.state;
+  if (state.mode === TYPE) { state.mode = TYPEDO; }    /* skip check */
+
+
+  //--- LOAD() ---
+  put = strm.next_out;
+  output = strm.output;
+  left = strm.avail_out;
+  next = strm.next_in;
+  input = strm.input;
+  have = strm.avail_in;
+  hold = state.hold;
+  bits = state.bits;
+  //---
+
+  _in = have;
+  _out = left;
+  ret = Z_OK;
+
+  inf_leave: // goto emulation
+  for (;;) {
+    switch (state.mode) {
+      case HEAD:
+        if (state.wrap === 0) {
+          state.mode = TYPEDO;
+          break;
+        }
+        //=== NEEDBITS(16);
+        while (bits < 16) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        if ((state.wrap & 2) && hold === 0x8b1f) {  /* gzip header */
+          state.check = 0/*crc32(0L, Z_NULL, 0)*/;
+          //=== CRC2(state.check, hold);
+          hbuf[0] = hold & 0xff;
+          hbuf[1] = (hold >>> 8) & 0xff;
+          state.check = crc32(state.check, hbuf, 2, 0);
+          //===//
+
+          //=== INITBITS();
+          hold = 0;
+          bits = 0;
+          //===//
+          state.mode = FLAGS;
+          break;
+        }
+        state.flags = 0;           /* expect zlib header */
+        if (state.head) {
+          state.head.done = false;
+        }
+        if (!(state.wrap & 1) ||   /* check if zlib header allowed */
+          (((hold & 0xff)/*BITS(8)*/ << 8) + (hold >> 8)) % 31) {
+          strm.msg = 'incorrect header check';
+          state.mode = BAD;
+          break;
+        }
+        if ((hold & 0x0f)/*BITS(4)*/ !== Z_DEFLATED) {
+          strm.msg = 'unknown compression method';
+          state.mode = BAD;
+          break;
+        }
+        //--- DROPBITS(4) ---//
+        hold >>>= 4;
+        bits -= 4;
+        //---//
+        len = (hold & 0x0f)/*BITS(4)*/ + 8;
+        if (state.wbits === 0) {
+          state.wbits = len;
+        }
+        else if (len > state.wbits) {
+          strm.msg = 'invalid window size';
+          state.mode = BAD;
+          break;
+        }
+        state.dmax = 1 << len;
+        //Tracev((stderr, "inflate:   zlib header ok\n"));
+        strm.adler = state.check = 1/*adler32(0L, Z_NULL, 0)*/;
+        state.mode = hold & 0x200 ? DICTID : TYPE;
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        break;
+      case FLAGS:
+        //=== NEEDBITS(16); */
+        while (bits < 16) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        state.flags = hold;
+        if ((state.flags & 0xff) !== Z_DEFLATED) {
+          strm.msg = 'unknown compression method';
+          state.mode = BAD;
+          break;
+        }
+        if (state.flags & 0xe000) {
+          strm.msg = 'unknown header flags set';
+          state.mode = BAD;
+          break;
+        }
+        if (state.head) {
+          state.head.text = ((hold >> 8) & 1);
+        }
+        if (state.flags & 0x0200) {
+          //=== CRC2(state.check, hold);
+          hbuf[0] = hold & 0xff;
+          hbuf[1] = (hold >>> 8) & 0xff;
+          state.check = crc32(state.check, hbuf, 2, 0);
+          //===//
+        }
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        state.mode = TIME;
+        /* falls through */
+      case TIME:
+        //=== NEEDBITS(32); */
+        while (bits < 32) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        if (state.head) {
+          state.head.time = hold;
+        }
+        if (state.flags & 0x0200) {
+          //=== CRC4(state.check, hold)
+          hbuf[0] = hold & 0xff;
+          hbuf[1] = (hold >>> 8) & 0xff;
+          hbuf[2] = (hold >>> 16) & 0xff;
+          hbuf[3] = (hold >>> 24) & 0xff;
+          state.check = crc32(state.check, hbuf, 4, 0);
+          //===
+        }
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        state.mode = OS;
+        /* falls through */
+      case OS:
+        //=== NEEDBITS(16); */
+        while (bits < 16) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        if (state.head) {
+          state.head.xflags = (hold & 0xff);
+          state.head.os = (hold >> 8);
+        }
+        if (state.flags & 0x0200) {
+          //=== CRC2(state.check, hold);
+          hbuf[0] = hold & 0xff;
+          hbuf[1] = (hold >>> 8) & 0xff;
+          state.check = crc32(state.check, hbuf, 2, 0);
+          //===//
+        }
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        state.mode = EXLEN;
+        /* falls through */
+      case EXLEN:
+        if (state.flags & 0x0400) {
+          //=== NEEDBITS(16); */
+          while (bits < 16) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          state.length = hold;
+          if (state.head) {
+            state.head.extra_len = hold;
+          }
+          if (state.flags & 0x0200) {
+            //=== CRC2(state.check, hold);
+            hbuf[0] = hold & 0xff;
+            hbuf[1] = (hold >>> 8) & 0xff;
+            state.check = crc32(state.check, hbuf, 2, 0);
+            //===//
+          }
+          //=== INITBITS();
+          hold = 0;
+          bits = 0;
+          //===//
+        }
+        else if (state.head) {
+          state.head.extra = null/*Z_NULL*/;
+        }
+        state.mode = EXTRA;
+        /* falls through */
+      case EXTRA:
+        if (state.flags & 0x0400) {
+          copy = state.length;
+          if (copy > have) { copy = have; }
+          if (copy) {
+            if (state.head) {
+              len = state.head.extra_len - state.length;
+              if (!state.head.extra) {
+                // Use untyped array for more convenient processing later
+                state.head.extra = new Array(state.head.extra_len);
+              }
+              utils.arraySet(
+                state.head.extra,
+                input,
+                next,
+                // extra field is limited to 65536 bytes
+                // - no need for additional size check
+                copy,
+                /*len + copy > state.head.extra_max - len ? state.head.extra_max : copy,*/
+                len
+              );
+              //zmemcpy(state.head.extra + len, next,
+              //        len + copy > state.head.extra_max ?
+              //        state.head.extra_max - len : copy);
+            }
+            if (state.flags & 0x0200) {
+              state.check = crc32(state.check, input, copy, next);
+            }
+            have -= copy;
+            next += copy;
+            state.length -= copy;
+          }
+          if (state.length) { break inf_leave; }
+        }
+        state.length = 0;
+        state.mode = NAME;
+        /* falls through */
+      case NAME:
+        if (state.flags & 0x0800) {
+          if (have === 0) { break inf_leave; }
+          copy = 0;
+          do {
+            // TODO: 2 or 1 bytes?
+            len = input[next + copy++];
+            /* use constant limit because in js we should not preallocate memory */
+            if (state.head && len &&
+                (state.length < 65536 /*state.head.name_max*/)) {
+              state.head.name += String.fromCharCode(len);
+            }
+          } while (len && copy < have);
+
+          if (state.flags & 0x0200) {
+            state.check = crc32(state.check, input, copy, next);
+          }
+          have -= copy;
+          next += copy;
+          if (len) { break inf_leave; }
+        }
+        else if (state.head) {
+          state.head.name = null;
+        }
+        state.length = 0;
+        state.mode = COMMENT;
+        /* falls through */
+      case COMMENT:
+        if (state.flags & 0x1000) {
+          if (have === 0) { break inf_leave; }
+          copy = 0;
+          do {
+            len = input[next + copy++];
+            /* use constant limit because in js we should not preallocate memory */
+            if (state.head && len &&
+                (state.length < 65536 /*state.head.comm_max*/)) {
+              state.head.comment += String.fromCharCode(len);
+            }
+          } while (len && copy < have);
+          if (state.flags & 0x0200) {
+            state.check = crc32(state.check, input, copy, next);
+          }
+          have -= copy;
+          next += copy;
+          if (len) { break inf_leave; }
+        }
+        else if (state.head) {
+          state.head.comment = null;
+        }
+        state.mode = HCRC;
+        /* falls through */
+      case HCRC:
+        if (state.flags & 0x0200) {
+          //=== NEEDBITS(16); */
+          while (bits < 16) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          if (hold !== (state.check & 0xffff)) {
+            strm.msg = 'header crc mismatch';
+            state.mode = BAD;
+            break;
+          }
+          //=== INITBITS();
+          hold = 0;
+          bits = 0;
+          //===//
+        }
+        if (state.head) {
+          state.head.hcrc = ((state.flags >> 9) & 1);
+          state.head.done = true;
+        }
+        strm.adler = state.check = 0;
+        state.mode = TYPE;
+        break;
+      case DICTID:
+        //=== NEEDBITS(32); */
+        while (bits < 32) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        strm.adler = state.check = zswap32(hold);
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        state.mode = DICT;
+        /* falls through */
+      case DICT:
+        if (state.havedict === 0) {
+          //--- RESTORE() ---
+          strm.next_out = put;
+          strm.avail_out = left;
+          strm.next_in = next;
+          strm.avail_in = have;
+          state.hold = hold;
+          state.bits = bits;
+          //---
+          return Z_NEED_DICT;
+        }
+        strm.adler = state.check = 1/*adler32(0L, Z_NULL, 0)*/;
+        state.mode = TYPE;
+        /* falls through */
+      case TYPE:
+        if (flush === Z_BLOCK || flush === Z_TREES) { break inf_leave; }
+        /* falls through */
+      case TYPEDO:
+        if (state.last) {
+          //--- BYTEBITS() ---//
+          hold >>>= bits & 7;
+          bits -= bits & 7;
+          //---//
+          state.mode = CHECK;
+          break;
+        }
+        //=== NEEDBITS(3); */
+        while (bits < 3) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        state.last = (hold & 0x01)/*BITS(1)*/;
+        //--- DROPBITS(1) ---//
+        hold >>>= 1;
+        bits -= 1;
+        //---//
+
+        switch ((hold & 0x03)/*BITS(2)*/) {
+          case 0:                             /* stored block */
+            //Tracev((stderr, "inflate:     stored block%s\n",
+            //        state.last ? " (last)" : ""));
+            state.mode = STORED;
+            break;
+          case 1:                             /* fixed block */
+            fixedtables(state);
+            //Tracev((stderr, "inflate:     fixed codes block%s\n",
+            //        state.last ? " (last)" : ""));
+            state.mode = LEN_;             /* decode codes */
+            if (flush === Z_TREES) {
+              //--- DROPBITS(2) ---//
+              hold >>>= 2;
+              bits -= 2;
+              //---//
+              break inf_leave;
+            }
+            break;
+          case 2:                             /* dynamic block */
+            //Tracev((stderr, "inflate:     dynamic codes block%s\n",
+            //        state.last ? " (last)" : ""));
+            state.mode = TABLE;
+            break;
+          case 3:
+            strm.msg = 'invalid block type';
+            state.mode = BAD;
+        }
+        //--- DROPBITS(2) ---//
+        hold >>>= 2;
+        bits -= 2;
+        //---//
+        break;
+      case STORED:
+        //--- BYTEBITS() ---// /* go to byte boundary */
+        hold >>>= bits & 7;
+        bits -= bits & 7;
+        //---//
+        //=== NEEDBITS(32); */
+        while (bits < 32) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        if ((hold & 0xffff) !== ((hold >>> 16) ^ 0xffff)) {
+          strm.msg = 'invalid stored block lengths';
+          state.mode = BAD;
+          break;
+        }
+        state.length = hold & 0xffff;
+        //Tracev((stderr, "inflate:       stored length %u\n",
+        //        state.length));
+        //=== INITBITS();
+        hold = 0;
+        bits = 0;
+        //===//
+        state.mode = COPY_;
+        if (flush === Z_TREES) { break inf_leave; }
+        /* falls through */
+      case COPY_:
+        state.mode = COPY;
+        /* falls through */
+      case COPY:
+        copy = state.length;
+        if (copy) {
+          if (copy > have) { copy = have; }
+          if (copy > left) { copy = left; }
+          if (copy === 0) { break inf_leave; }
+          //--- zmemcpy(put, next, copy); ---
+          utils.arraySet(output, input, next, copy, put);
+          //---//
+          have -= copy;
+          next += copy;
+          left -= copy;
+          put += copy;
+          state.length -= copy;
+          break;
+        }
+        //Tracev((stderr, "inflate:       stored end\n"));
+        state.mode = TYPE;
+        break;
+      case TABLE:
+        //=== NEEDBITS(14); */
+        while (bits < 14) {
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+        }
+        //===//
+        state.nlen = (hold & 0x1f)/*BITS(5)*/ + 257;
+        //--- DROPBITS(5) ---//
+        hold >>>= 5;
+        bits -= 5;
+        //---//
+        state.ndist = (hold & 0x1f)/*BITS(5)*/ + 1;
+        //--- DROPBITS(5) ---//
+        hold >>>= 5;
+        bits -= 5;
+        //---//
+        state.ncode = (hold & 0x0f)/*BITS(4)*/ + 4;
+        //--- DROPBITS(4) ---//
+        hold >>>= 4;
+        bits -= 4;
+        //---//
+//#ifndef PKZIP_BUG_WORKAROUND
+        if (state.nlen > 286 || state.ndist > 30) {
+          strm.msg = 'too many length or distance symbols';
+          state.mode = BAD;
+          break;
+        }
+//#endif
+        //Tracev((stderr, "inflate:       table sizes ok\n"));
+        state.have = 0;
+        state.mode = LENLENS;
+        /* falls through */
+      case LENLENS:
+        while (state.have < state.ncode) {
+          //=== NEEDBITS(3);
+          while (bits < 3) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          state.lens[order[state.have++]] = (hold & 0x07);//BITS(3);
+          //--- DROPBITS(3) ---//
+          hold >>>= 3;
+          bits -= 3;
+          //---//
+        }
+        while (state.have < 19) {
+          state.lens[order[state.have++]] = 0;
+        }
+        // We have separate tables & no pointers. 2 commented lines below not needed.
+        //state.next = state.codes;
+        //state.lencode = state.next;
+        // Switch to use dynamic table
+        state.lencode = state.lendyn;
+        state.lenbits = 7;
+
+        opts = { bits: state.lenbits };
+        ret = inflate_table(CODES, state.lens, 0, 19, state.lencode, 0, state.work, opts);
+        state.lenbits = opts.bits;
+
+        if (ret) {
+          strm.msg = 'invalid code lengths set';
+          state.mode = BAD;
+          break;
+        }
+        //Tracev((stderr, "inflate:       code lengths ok\n"));
+        state.have = 0;
+        state.mode = CODELENS;
+        /* falls through */
+      case CODELENS:
+        while (state.have < state.nlen + state.ndist) {
+          for (;;) {
+            here = state.lencode[hold & ((1 << state.lenbits) - 1)];/*BITS(state.lenbits)*/
+            here_bits = here >>> 24;
+            here_op = (here >>> 16) & 0xff;
+            here_val = here & 0xffff;
+
+            if ((here_bits) <= bits) { break; }
+            //--- PULLBYTE() ---//
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+            //---//
+          }
+          if (here_val < 16) {
+            //--- DROPBITS(here.bits) ---//
+            hold >>>= here_bits;
+            bits -= here_bits;
+            //---//
+            state.lens[state.have++] = here_val;
+          }
+          else {
+            if (here_val === 16) {
+              //=== NEEDBITS(here.bits + 2);
+              n = here_bits + 2;
+              while (bits < n) {
+                if (have === 0) { break inf_leave; }
+                have--;
+                hold += input[next++] << bits;
+                bits += 8;
+              }
+              //===//
+              //--- DROPBITS(here.bits) ---//
+              hold >>>= here_bits;
+              bits -= here_bits;
+              //---//
+              if (state.have === 0) {
+                strm.msg = 'invalid bit length repeat';
+                state.mode = BAD;
+                break;
+              }
+              len = state.lens[state.have - 1];
+              copy = 3 + (hold & 0x03);//BITS(2);
+              //--- DROPBITS(2) ---//
+              hold >>>= 2;
+              bits -= 2;
+              //---//
+            }
+            else if (here_val === 17) {
+              //=== NEEDBITS(here.bits + 3);
+              n = here_bits + 3;
+              while (bits < n) {
+                if (have === 0) { break inf_leave; }
+                have--;
+                hold += input[next++] << bits;
+                bits += 8;
+              }
+              //===//
+              //--- DROPBITS(here.bits) ---//
+              hold >>>= here_bits;
+              bits -= here_bits;
+              //---//
+              len = 0;
+              copy = 3 + (hold & 0x07);//BITS(3);
+              //--- DROPBITS(3) ---//
+              hold >>>= 3;
+              bits -= 3;
+              //---//
+            }
+            else {
+              //=== NEEDBITS(here.bits + 7);
+              n = here_bits + 7;
+              while (bits < n) {
+                if (have === 0) { break inf_leave; }
+                have--;
+                hold += input[next++] << bits;
+                bits += 8;
+              }
+              //===//
+              //--- DROPBITS(here.bits) ---//
+              hold >>>= here_bits;
+              bits -= here_bits;
+              //---//
+              len = 0;
+              copy = 11 + (hold & 0x7f);//BITS(7);
+              //--- DROPBITS(7) ---//
+              hold >>>= 7;
+              bits -= 7;
+              //---//
+            }
+            if (state.have + copy > state.nlen + state.ndist) {
+              strm.msg = 'invalid bit length repeat';
+              state.mode = BAD;
+              break;
+            }
+            while (copy--) {
+              state.lens[state.have++] = len;
+            }
+          }
+        }
+
+        /* handle error breaks in while */
+        if (state.mode === BAD) { break; }
+
+        /* check for end-of-block code (better have one) */
+        if (state.lens[256] === 0) {
+          strm.msg = 'invalid code -- missing end-of-block';
+          state.mode = BAD;
+          break;
+        }
+
+        /* build code tables -- note: do not change the lenbits or distbits
+           values here (9 and 6) without reading the comments in inftrees.h
+           concerning the ENOUGH constants, which depend on those values */
+        state.lenbits = 9;
+
+        opts = { bits: state.lenbits };
+        ret = inflate_table(LENS, state.lens, 0, state.nlen, state.lencode, 0, state.work, opts);
+        // We have separate tables & no pointers. 2 commented lines below not needed.
+        // state.next_index = opts.table_index;
+        state.lenbits = opts.bits;
+        // state.lencode = state.next;
+
+        if (ret) {
+          strm.msg = 'invalid literal/lengths set';
+          state.mode = BAD;
+          break;
+        }
+
+        state.distbits = 6;
+        //state.distcode.copy(state.codes);
+        // Switch to use dynamic table
+        state.distcode = state.distdyn;
+        opts = { bits: state.distbits };
+        ret = inflate_table(DISTS, state.lens, state.nlen, state.ndist, state.distcode, 0, state.work, opts);
+        // We have separate tables & no pointers. 2 commented lines below not needed.
+        // state.next_index = opts.table_index;
+        state.distbits = opts.bits;
+        // state.distcode = state.next;
+
+        if (ret) {
+          strm.msg = 'invalid distances set';
+          state.mode = BAD;
+          break;
+        }
+        //Tracev((stderr, 'inflate:       codes ok\n'));
+        state.mode = LEN_;
+        if (flush === Z_TREES) { break inf_leave; }
+        /* falls through */
+      case LEN_:
+        state.mode = LEN;
+        /* falls through */
+      case LEN:
+        if (have >= 6 && left >= 258) {
+          //--- RESTORE() ---
+          strm.next_out = put;
+          strm.avail_out = left;
+          strm.next_in = next;
+          strm.avail_in = have;
+          state.hold = hold;
+          state.bits = bits;
+          //---
+          inflate_fast(strm, _out);
+          //--- LOAD() ---
+          put = strm.next_out;
+          output = strm.output;
+          left = strm.avail_out;
+          next = strm.next_in;
+          input = strm.input;
+          have = strm.avail_in;
+          hold = state.hold;
+          bits = state.bits;
+          //---
+
+          if (state.mode === TYPE) {
+            state.back = -1;
+          }
+          break;
+        }
+        state.back = 0;
+        for (;;) {
+          here = state.lencode[hold & ((1 << state.lenbits) - 1)];  /*BITS(state.lenbits)*/
+          here_bits = here >>> 24;
+          here_op = (here >>> 16) & 0xff;
+          here_val = here & 0xffff;
+
+          if (here_bits <= bits) { break; }
+          //--- PULLBYTE() ---//
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+          //---//
+        }
+        if (here_op && (here_op & 0xf0) === 0) {
+          last_bits = here_bits;
+          last_op = here_op;
+          last_val = here_val;
+          for (;;) {
+            here = state.lencode[last_val +
+                    ((hold & ((1 << (last_bits + last_op)) - 1))/*BITS(last.bits + last.op)*/ >> last_bits)];
+            here_bits = here >>> 24;
+            here_op = (here >>> 16) & 0xff;
+            here_val = here & 0xffff;
+
+            if ((last_bits + here_bits) <= bits) { break; }
+            //--- PULLBYTE() ---//
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+            //---//
+          }
+          //--- DROPBITS(last.bits) ---//
+          hold >>>= last_bits;
+          bits -= last_bits;
+          //---//
+          state.back += last_bits;
+        }
+        //--- DROPBITS(here.bits) ---//
+        hold >>>= here_bits;
+        bits -= here_bits;
+        //---//
+        state.back += here_bits;
+        state.length = here_val;
+        if (here_op === 0) {
+          //Tracevv((stderr, here.val >= 0x20 && here.val < 0x7f ?
+          //        "inflate:         literal '%c'\n" :
+          //        "inflate:         literal 0x%02x\n", here.val));
+          state.mode = LIT;
+          break;
+        }
+        if (here_op & 32) {
+          //Tracevv((stderr, "inflate:         end of block\n"));
+          state.back = -1;
+          state.mode = TYPE;
+          break;
+        }
+        if (here_op & 64) {
+          strm.msg = 'invalid literal/length code';
+          state.mode = BAD;
+          break;
+        }
+        state.extra = here_op & 15;
+        state.mode = LENEXT;
+        /* falls through */
+      case LENEXT:
+        if (state.extra) {
+          //=== NEEDBITS(state.extra);
+          n = state.extra;
+          while (bits < n) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          state.length += hold & ((1 << state.extra) - 1)/*BITS(state.extra)*/;
+          //--- DROPBITS(state.extra) ---//
+          hold >>>= state.extra;
+          bits -= state.extra;
+          //---//
+          state.back += state.extra;
+        }
+        //Tracevv((stderr, "inflate:         length %u\n", state.length));
+        state.was = state.length;
+        state.mode = DIST;
+        /* falls through */
+      case DIST:
+        for (;;) {
+          here = state.distcode[hold & ((1 << state.distbits) - 1)];/*BITS(state.distbits)*/
+          here_bits = here >>> 24;
+          here_op = (here >>> 16) & 0xff;
+          here_val = here & 0xffff;
+
+          if ((here_bits) <= bits) { break; }
+          //--- PULLBYTE() ---//
+          if (have === 0) { break inf_leave; }
+          have--;
+          hold += input[next++] << bits;
+          bits += 8;
+          //---//
+        }
+        if ((here_op & 0xf0) === 0) {
+          last_bits = here_bits;
+          last_op = here_op;
+          last_val = here_val;
+          for (;;) {
+            here = state.distcode[last_val +
+                    ((hold & ((1 << (last_bits + last_op)) - 1))/*BITS(last.bits + last.op)*/ >> last_bits)];
+            here_bits = here >>> 24;
+            here_op = (here >>> 16) & 0xff;
+            here_val = here & 0xffff;
+
+            if ((last_bits + here_bits) <= bits) { break; }
+            //--- PULLBYTE() ---//
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+            //---//
+          }
+          //--- DROPBITS(last.bits) ---//
+          hold >>>= last_bits;
+          bits -= last_bits;
+          //---//
+          state.back += last_bits;
+        }
+        //--- DROPBITS(here.bits) ---//
+        hold >>>= here_bits;
+        bits -= here_bits;
+        //---//
+        state.back += here_bits;
+        if (here_op & 64) {
+          strm.msg = 'invalid distance code';
+          state.mode = BAD;
+          break;
+        }
+        state.offset = here_val;
+        state.extra = (here_op) & 15;
+        state.mode = DISTEXT;
+        /* falls through */
+      case DISTEXT:
+        if (state.extra) {
+          //=== NEEDBITS(state.extra);
+          n = state.extra;
+          while (bits < n) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          state.offset += hold & ((1 << state.extra) - 1)/*BITS(state.extra)*/;
+          //--- DROPBITS(state.extra) ---//
+          hold >>>= state.extra;
+          bits -= state.extra;
+          //---//
+          state.back += state.extra;
+        }
+//#ifdef INFLATE_STRICT
+        if (state.offset > state.dmax) {
+          strm.msg = 'invalid distance too far back';
+          state.mode = BAD;
+          break;
+        }
+//#endif
+        //Tracevv((stderr, "inflate:         distance %u\n", state.offset));
+        state.mode = MATCH;
+        /* falls through */
+      case MATCH:
+        if (left === 0) { break inf_leave; }
+        copy = _out - left;
+        if (state.offset > copy) {         /* copy from window */
+          copy = state.offset - copy;
+          if (copy > state.whave) {
+            if (state.sane) {
+              strm.msg = 'invalid distance too far back';
+              state.mode = BAD;
+              break;
+            }
+// (!) This block is disabled in zlib defaults,
+// don't enable it for binary compatibility
+//#ifdef INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR
+//          Trace((stderr, "inflate.c too far\n"));
+//          copy -= state.whave;
+//          if (copy > state.length) { copy = state.length; }
+//          if (copy > left) { copy = left; }
+//          left -= copy;
+//          state.length -= copy;
+//          do {
+//            output[put++] = 0;
+//          } while (--copy);
+//          if (state.length === 0) { state.mode = LEN; }
+//          break;
+//#endif
+          }
+          if (copy > state.wnext) {
+            copy -= state.wnext;
+            from = state.wsize - copy;
+          }
+          else {
+            from = state.wnext - copy;
+          }
+          if (copy > state.length) { copy = state.length; }
+          from_source = state.window;
+        }
+        else {                              /* copy from output */
+          from_source = output;
+          from = put - state.offset;
+          copy = state.length;
+        }
+        if (copy > left) { copy = left; }
+        left -= copy;
+        state.length -= copy;
+        do {
+          output[put++] = from_source[from++];
+        } while (--copy);
+        if (state.length === 0) { state.mode = LEN; }
+        break;
+      case LIT:
+        if (left === 0) { break inf_leave; }
+        output[put++] = state.length;
+        left--;
+        state.mode = LEN;
+        break;
+      case CHECK:
+        if (state.wrap) {
+          //=== NEEDBITS(32);
+          while (bits < 32) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            // Use '|' instead of '+' to make sure that result is signed
+            hold |= input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          _out -= left;
+          strm.total_out += _out;
+          state.total += _out;
+          if (_out) {
+            strm.adler = state.check =
+                /*UPDATE(state.check, put - _out, _out);*/
+                (state.flags ? crc32(state.check, output, _out, put - _out) : adler32(state.check, output, _out, put - _out));
+
+          }
+          _out = left;
+          // NB: crc32 stored as signed 32-bit int, zswap32 returns signed too
+          if ((state.flags ? hold : zswap32(hold)) !== state.check) {
+            strm.msg = 'incorrect data check';
+            state.mode = BAD;
+            break;
+          }
+          //=== INITBITS();
+          hold = 0;
+          bits = 0;
+          //===//
+          //Tracev((stderr, "inflate:   check matches trailer\n"));
+        }
+        state.mode = LENGTH;
+        /* falls through */
+      case LENGTH:
+        if (state.wrap && state.flags) {
+          //=== NEEDBITS(32);
+          while (bits < 32) {
+            if (have === 0) { break inf_leave; }
+            have--;
+            hold += input[next++] << bits;
+            bits += 8;
+          }
+          //===//
+          if (hold !== (state.total & 0xffffffff)) {
+            strm.msg = 'incorrect length check';
+            state.mode = BAD;
+            break;
+          }
+          //=== INITBITS();
+          hold = 0;
+          bits = 0;
+          //===//
+          //Tracev((stderr, "inflate:   length matches trailer\n"));
+        }
+        state.mode = DONE;
+        /* falls through */
+      case DONE:
+        ret = Z_STREAM_END;
+        break inf_leave;
+      case BAD:
+        ret = Z_DATA_ERROR;
+        break inf_leave;
+      case MEM:
+        return Z_MEM_ERROR;
+      case SYNC:
+        /* falls through */
+      default:
+        return Z_STREAM_ERROR;
+    }
+  }
+
+  // inf_leave <- here is real place for "goto inf_leave", emulated via "break inf_leave"
+
+  /*
+     Return from inflate(), updating the total counts and the check value.
+     If there was no progress during the inflate() call, return a buffer
+     error.  Call updatewindow() to create and/or update the window state.
+     Note: a memory error from inflate() is non-recoverable.
+   */
+
+  //--- RESTORE() ---
+  strm.next_out = put;
+  strm.avail_out = left;
+  strm.next_in = next;
+  strm.avail_in = have;
+  state.hold = hold;
+  state.bits = bits;
+  //---
+
+  if (state.wsize || (_out !== strm.avail_out && state.mode < BAD &&
+                      (state.mode < CHECK || flush !== Z_FINISH))) {
+    if (updatewindow(strm, strm.output, strm.next_out, _out - strm.avail_out)) {
+      state.mode = MEM;
+      return Z_MEM_ERROR;
+    }
+  }
+  _in -= strm.avail_in;
+  _out -= strm.avail_out;
+  strm.total_in += _in;
+  strm.total_out += _out;
+  state.total += _out;
+  if (state.wrap && _out) {
+    strm.adler = state.check = /*UPDATE(state.check, strm.next_out - _out, _out);*/
+      (state.flags ? crc32(state.check, output, _out, strm.next_out - _out) : adler32(state.check, output, _out, strm.next_out - _out));
+  }
+  strm.data_type = state.bits + (state.last ? 64 : 0) +
+                    (state.mode === TYPE ? 128 : 0) +
+                    (state.mode === LEN_ || state.mode === COPY_ ? 256 : 0);
+  if (((_in === 0 && _out === 0) || flush === Z_FINISH) && ret === Z_OK) {
+    ret = Z_BUF_ERROR;
+  }
+  return ret;
+}
+
+function inflateEnd(strm) {
+
+  if (!strm || !strm.state /*|| strm->zfree == (free_func)0*/) {
+    return Z_STREAM_ERROR;
+  }
+
+  var state = strm.state;
+  if (state.window) {
+    state.window = null;
+  }
+  strm.state = null;
+  return Z_OK;
+}
+
+function inflateGetHeader(strm, head) {
+  var state;
+
+  /* check state */
+  if (!strm || !strm.state) { return Z_STREAM_ERROR; }
+  state = strm.state;
+  if ((state.wrap & 2) === 0) { return Z_STREAM_ERROR; }
+
+  /* save header structure */
+  state.head = head;
+  head.done = false;
+  return Z_OK;
+}
+
+function inflateSetDictionary(strm, dictionary) {
+  var dictLength = dictionary.length;
+
+  var state;
+  var dictid;
+  var ret;
+
+  /* check state */
+  if (!strm /* == Z_NULL */ || !strm.state /* == Z_NULL */) { return Z_STREAM_ERROR; }
+  state = strm.state;
+
+  if (state.wrap !== 0 && state.mode !== DICT) {
+    return Z_STREAM_ERROR;
+  }
+
+  /* check for correct dictionary identifier */
+  if (state.mode === DICT) {
+    dictid = 1; /* adler32(0, null, 0)*/
+    /* dictid = adler32(dictid, dictionary, dictLength); */
+    dictid = adler32(dictid, dictionary, dictLength, 0);
+    if (dictid !== state.check) {
+      return Z_DATA_ERROR;
+    }
+  }
+  /* copy dictionary to window using updatewindow(), which will amend the
+   existing dictionary if appropriate */
+  ret = updatewindow(strm, dictionary, dictLength, dictLength);
+  if (ret) {
+    state.mode = MEM;
+    return Z_MEM_ERROR;
+  }
+  state.havedict = 1;
+  // Tracev((stderr, "inflate:   dictionary set\n"));
+  return Z_OK;
+}
+
+exports.inflateReset = inflateReset;
+exports.inflateReset2 = inflateReset2;
+exports.inflateResetKeep = inflateResetKeep;
+exports.inflateInit = inflateInit;
+exports.inflateInit2 = inflateInit2;
+exports.inflate = inflate;
+exports.inflateEnd = inflateEnd;
+exports.inflateGetHeader = inflateGetHeader;
+exports.inflateSetDictionary = inflateSetDictionary;
+exports.inflateInfo = 'pako inflate (from Nodeca project)';
+
+/* Not implemented
+exports.inflateCopy = inflateCopy;
+exports.inflateGetDictionary = inflateGetDictionary;
+exports.inflateMark = inflateMark;
+exports.inflatePrime = inflatePrime;
+exports.inflateSync = inflateSync;
+exports.inflateSyncPoint = inflateSyncPoint;
+exports.inflateUndermine = inflateUndermine;
+*/
+
+},{"../utils/common":36,"./adler32":37,"./crc32":39,"./inffast":41,"./inftrees":43}],43:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+var utils = require('../utils/common');
+
+var MAXBITS = 15;
+var ENOUGH_LENS = 852;
+var ENOUGH_DISTS = 592;
+//var ENOUGH = (ENOUGH_LENS+ENOUGH_DISTS);
+
+var CODES = 0;
+var LENS = 1;
+var DISTS = 2;
+
+var lbase = [ /* Length codes 257..285 base */
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+  35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 0, 0
+];
+
+var lext = [ /* Length codes 257..285 extra */
+  16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 18, 18, 18, 18,
+  19, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 16, 72, 78
+];
+
+var dbase = [ /* Distance codes 0..29 base */
+  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+  257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
+  8193, 12289, 16385, 24577, 0, 0
+];
+
+var dext = [ /* Distance codes 0..29 extra */
+  16, 16, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
+  23, 23, 24, 24, 25, 25, 26, 26, 27, 27,
+  28, 28, 29, 29, 64, 64
+];
+
+module.exports = function inflate_table(type, lens, lens_index, codes, table, table_index, work, opts)
+{
+  var bits = opts.bits;
+      //here = opts.here; /* table entry for duplication */
+
+  var len = 0;               /* a code's length in bits */
+  var sym = 0;               /* index of code symbols */
+  var min = 0, max = 0;          /* minimum and maximum code lengths */
+  var root = 0;              /* number of index bits for root table */
+  var curr = 0;              /* number of index bits for current table */
+  var drop = 0;              /* code bits to drop for sub-table */
+  var left = 0;                   /* number of prefix codes available */
+  var used = 0;              /* code entries in table used */
+  var huff = 0;              /* Huffman code */
+  var incr;              /* for incrementing code, index */
+  var fill;              /* index for replicating entries */
+  var low;               /* low bits for current root entry */
+  var mask;              /* mask for low root bits */
+  var next;             /* next available space in table */
+  var base = null;     /* base value table to use */
+  var base_index = 0;
+//  var shoextra;    /* extra bits table to use */
+  var end;                    /* use base and extra for symbol > end */
+  var count = new utils.Buf16(MAXBITS + 1); //[MAXBITS+1];    /* number of codes of each length */
+  var offs = new utils.Buf16(MAXBITS + 1); //[MAXBITS+1];     /* offsets in table for each length */
+  var extra = null;
+  var extra_index = 0;
+
+  var here_bits, here_op, here_val;
+
+  /*
+   Process a set of code lengths to create a canonical Huffman code.  The
+   code lengths are lens[0..codes-1].  Each length corresponds to the
+   symbols 0..codes-1.  The Huffman code is generated by first sorting the
+   symbols by length from short to long, and retaining the symbol order
+   for codes with equal lengths.  Then the code starts with all zero bits
+   for the first code of the shortest length, and the codes are integer
+   increments for the same length, and zeros are appended as the length
+   increases.  For the deflate format, these bits are stored backwards
+   from their more natural integer increment ordering, and so when the
+   decoding tables are built in the large loop below, the integer codes
+   are incremented backwards.
+
+   This routine assumes, but does not check, that all of the entries in
+   lens[] are in the range 0..MAXBITS.  The caller must assure this.
+   1..MAXBITS is interpreted as that code length.  zero means that that
+   symbol does not occur in this code.
+
+   The codes are sorted by computing a count of codes for each length,
+   creating from that a table of starting indices for each length in the
+   sorted table, and then entering the symbols in order in the sorted
+   table.  The sorted table is work[], with that space being provided by
+   the caller.
+
+   The length counts are used for other purposes as well, i.e. finding
+   the minimum and maximum length codes, determining if there are any
+   codes at all, checking for a valid set of lengths, and looking ahead
+   at length counts to determine sub-table sizes when building the
+   decoding tables.
+   */
+
+  /* accumulate lengths for codes (assumes lens[] all in 0..MAXBITS) */
+  for (len = 0; len <= MAXBITS; len++) {
+    count[len] = 0;
+  }
+  for (sym = 0; sym < codes; sym++) {
+    count[lens[lens_index + sym]]++;
+  }
+
+  /* bound code lengths, force root to be within code lengths */
+  root = bits;
+  for (max = MAXBITS; max >= 1; max--) {
+    if (count[max] !== 0) { break; }
+  }
+  if (root > max) {
+    root = max;
+  }
+  if (max === 0) {                     /* no symbols to code at all */
+    //table.op[opts.table_index] = 64;  //here.op = (var char)64;    /* invalid code marker */
+    //table.bits[opts.table_index] = 1;   //here.bits = (var char)1;
+    //table.val[opts.table_index++] = 0;   //here.val = (var short)0;
+    table[table_index++] = (1 << 24) | (64 << 16) | 0;
+
+
+    //table.op[opts.table_index] = 64;
+    //table.bits[opts.table_index] = 1;
+    //table.val[opts.table_index++] = 0;
+    table[table_index++] = (1 << 24) | (64 << 16) | 0;
+
+    opts.bits = 1;
+    return 0;     /* no symbols, but wait for decoding to report error */
+  }
+  for (min = 1; min < max; min++) {
+    if (count[min] !== 0) { break; }
+  }
+  if (root < min) {
+    root = min;
+  }
+
+  /* check for an over-subscribed or incomplete set of lengths */
+  left = 1;
+  for (len = 1; len <= MAXBITS; len++) {
+    left <<= 1;
+    left -= count[len];
+    if (left < 0) {
+      return -1;
+    }        /* over-subscribed */
+  }
+  if (left > 0 && (type === CODES || max !== 1)) {
+    return -1;                      /* incomplete set */
+  }
+
+  /* generate offsets into symbol table for each length for sorting */
+  offs[1] = 0;
+  for (len = 1; len < MAXBITS; len++) {
+    offs[len + 1] = offs[len] + count[len];
+  }
+
+  /* sort symbols by length, by symbol order within each length */
+  for (sym = 0; sym < codes; sym++) {
+    if (lens[lens_index + sym] !== 0) {
+      work[offs[lens[lens_index + sym]]++] = sym;
+    }
+  }
+
+  /*
+   Create and fill in decoding tables.  In this loop, the table being
+   filled is at next and has curr index bits.  The code being used is huff
+   with length len.  That code is converted to an index by dropping drop
+   bits off of the bottom.  For codes where len is less than drop + curr,
+   those top drop + curr - len bits are incremented through all values to
+   fill the table with replicated entries.
+
+   root is the number of index bits for the root table.  When len exceeds
+   root, sub-tables are created pointed to by the root entry with an index
+   of the low root bits of huff.  This is saved in low to check for when a
+   new sub-table should be started.  drop is zero when the root table is
+   being filled, and drop is root when sub-tables are being filled.
+
+   When a new sub-table is needed, it is necessary to look ahead in the
+   code lengths to determine what size sub-table is needed.  The length
+   counts are used for this, and so count[] is decremented as codes are
+   entered in the tables.
+
+   used keeps track of how many table entries have been allocated from the
+   provided *table space.  It is checked for LENS and DIST tables against
+   the constants ENOUGH_LENS and ENOUGH_DISTS to guard against changes in
+   the initial root table size constants.  See the comments in inftrees.h
+   for more information.
+
+   sym increments through all symbols, and the loop terminates when
+   all codes of length max, i.e. all codes, have been processed.  This
+   routine permits incomplete codes, so another loop after this one fills
+   in the rest of the decoding tables with invalid code markers.
+   */
+
+  /* set up for code type */
+  // poor man optimization - use if-else instead of switch,
+  // to avoid deopts in old v8
+  if (type === CODES) {
+    base = extra = work;    /* dummy value--not used */
+    end = 19;
+
+  } else if (type === LENS) {
+    base = lbase;
+    base_index -= 257;
+    extra = lext;
+    extra_index -= 257;
+    end = 256;
+
+  } else {                    /* DISTS */
+    base = dbase;
+    extra = dext;
+    end = -1;
+  }
+
+  /* initialize opts for loop */
+  huff = 0;                   /* starting code */
+  sym = 0;                    /* starting code symbol */
+  len = min;                  /* starting code length */
+  next = table_index;              /* current table to fill in */
+  curr = root;                /* current table index bits */
+  drop = 0;                   /* current bits to drop from code for index */
+  low = -1;                   /* trigger new sub-table when len > root */
+  used = 1 << root;          /* use root table entries */
+  mask = used - 1;            /* mask for comparing low */
+
+  /* check available table space */
+  if ((type === LENS && used > ENOUGH_LENS) ||
+    (type === DISTS && used > ENOUGH_DISTS)) {
+    return 1;
+  }
+
+  /* process all codes and make table entries */
+  for (;;) {
+    /* create table entry */
+    here_bits = len - drop;
+    if (work[sym] < end) {
+      here_op = 0;
+      here_val = work[sym];
+    }
+    else if (work[sym] > end) {
+      here_op = extra[extra_index + work[sym]];
+      here_val = base[base_index + work[sym]];
+    }
+    else {
+      here_op = 32 + 64;         /* end of block */
+      here_val = 0;
+    }
+
+    /* replicate for those indices with low len bits equal to huff */
+    incr = 1 << (len - drop);
+    fill = 1 << curr;
+    min = fill;                 /* save offset to next table */
+    do {
+      fill -= incr;
+      table[next + (huff >> drop) + fill] = (here_bits << 24) | (here_op << 16) | here_val |0;
+    } while (fill !== 0);
+
+    /* backwards increment the len-bit code huff */
+    incr = 1 << (len - 1);
+    while (huff & incr) {
+      incr >>= 1;
+    }
+    if (incr !== 0) {
+      huff &= incr - 1;
+      huff += incr;
+    } else {
+      huff = 0;
+    }
+
+    /* go to next symbol, update count, len */
+    sym++;
+    if (--count[len] === 0) {
+      if (len === max) { break; }
+      len = lens[lens_index + work[sym]];
+    }
+
+    /* create new sub-table if needed */
+    if (len > root && (huff & mask) !== low) {
+      /* if first time, transition to sub-tables */
+      if (drop === 0) {
+        drop = root;
+      }
+
+      /* increment past last table */
+      next += min;            /* here min is 1 << curr */
+
+      /* determine length of next table */
+      curr = len - drop;
+      left = 1 << curr;
+      while (curr + drop < max) {
+        left -= count[curr + drop];
+        if (left <= 0) { break; }
+        curr++;
+        left <<= 1;
+      }
+
+      /* check for enough space */
+      used += 1 << curr;
+      if ((type === LENS && used > ENOUGH_LENS) ||
+        (type === DISTS && used > ENOUGH_DISTS)) {
+        return 1;
+      }
+
+      /* point entry in root table to sub-table */
+      low = huff & mask;
+      /*table.op[low] = curr;
+      table.bits[low] = root;
+      table.val[low] = next - opts.table_index;*/
+      table[low] = (root << 24) | (curr << 16) | (next - table_index) |0;
+    }
+  }
+
+  /* fill in remaining table entry if code is incomplete (guaranteed to have
+   at most one remaining entry, since if the code is incomplete, the
+   maximum code length that was allowed to get this far is one bit) */
+  if (huff !== 0) {
+    //table.op[next + huff] = 64;            /* invalid code marker */
+    //table.bits[next + huff] = len - drop;
+    //table.val[next + huff] = 0;
+    table[next + huff] = ((len - drop) << 24) | (64 << 16) |0;
+  }
+
+  /* set return parameters */
+  //opts.table_index += used;
+  opts.bits = root;
+  return 0;
+};
+
+},{"../utils/common":36}],44:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+module.exports = {
+  2:      'need dictionary',     /* Z_NEED_DICT       2  */
+  1:      'stream end',          /* Z_STREAM_END      1  */
+  0:      '',                    /* Z_OK              0  */
+  '-1':   'file error',          /* Z_ERRNO         (-1) */
+  '-2':   'stream error',        /* Z_STREAM_ERROR  (-2) */
+  '-3':   'data error',          /* Z_DATA_ERROR    (-3) */
+  '-4':   'insufficient memory', /* Z_MEM_ERROR     (-4) */
+  '-5':   'buffer error',        /* Z_BUF_ERROR     (-5) */
+  '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
+};
+
+},{}],45:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+/* eslint-disable space-unary-ops */
+
+var utils = require('../utils/common');
+
+/* Public constants ==========================================================*/
+/* ===========================================================================*/
+
+
+//var Z_FILTERED          = 1;
+//var Z_HUFFMAN_ONLY      = 2;
+//var Z_RLE               = 3;
+var Z_FIXED               = 4;
+//var Z_DEFAULT_STRATEGY  = 0;
+
+/* Possible values of the data_type field (though see inflate()) */
+var Z_BINARY              = 0;
+var Z_TEXT                = 1;
+//var Z_ASCII             = 1; // = Z_TEXT
+var Z_UNKNOWN             = 2;
+
+/*============================================================================*/
+
+
+function zero(buf) { var len = buf.length; while (--len >= 0) { buf[len] = 0; } }
+
+// From zutil.h
+
+var STORED_BLOCK = 0;
+var STATIC_TREES = 1;
+var DYN_TREES    = 2;
+/* The three kinds of block type */
+
+var MIN_MATCH    = 3;
+var MAX_MATCH    = 258;
+/* The minimum and maximum match lengths */
+
+// From deflate.h
+/* ===========================================================================
+ * Internal compression state.
+ */
+
+var LENGTH_CODES  = 29;
+/* number of length codes, not counting the special END_BLOCK code */
+
+var LITERALS      = 256;
+/* number of literal bytes 0..255 */
+
+var L_CODES       = LITERALS + 1 + LENGTH_CODES;
+/* number of Literal or Length codes, including the END_BLOCK code */
+
+var D_CODES       = 30;
+/* number of distance codes */
+
+var BL_CODES      = 19;
+/* number of codes used to transfer the bit lengths */
+
+var HEAP_SIZE     = 2 * L_CODES + 1;
+/* maximum heap size */
+
+var MAX_BITS      = 15;
+/* All codes must not exceed MAX_BITS bits */
+
+var Buf_size      = 16;
+/* size of bit buffer in bi_buf */
+
+
+/* ===========================================================================
+ * Constants
+ */
+
+var MAX_BL_BITS = 7;
+/* Bit length codes must not exceed MAX_BL_BITS bits */
+
+var END_BLOCK   = 256;
+/* end of block literal code */
+
+var REP_3_6     = 16;
+/* repeat previous bit length 3-6 times (2 bits of repeat count) */
+
+var REPZ_3_10   = 17;
+/* repeat a zero length 3-10 times  (3 bits of repeat count) */
+
+var REPZ_11_138 = 18;
+/* repeat a zero length 11-138 times  (7 bits of repeat count) */
+
+/* eslint-disable comma-spacing,array-bracket-spacing */
+var extra_lbits =   /* extra bits for each length code */
+  [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+
+var extra_dbits =   /* extra bits for each distance code */
+  [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+
+var extra_blbits =  /* extra bits for each bit length code */
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,3,7];
+
+var bl_order =
+  [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+/* eslint-enable comma-spacing,array-bracket-spacing */
+
+/* The lengths of the bit length codes are sent in order of decreasing
+ * probability, to avoid transmitting the lengths for unused bit length codes.
+ */
+
+/* ===========================================================================
+ * Local data. These are initialized only once.
+ */
+
+// We pre-fill arrays with 0 to avoid uninitialized gaps
+
+var DIST_CODE_LEN = 512; /* see definition of array dist_code below */
+
+// !!!! Use flat array instead of structure, Freq = i*2, Len = i*2+1
+var static_ltree  = new Array((L_CODES + 2) * 2);
+zero(static_ltree);
+/* The static literal tree. Since the bit lengths are imposed, there is no
+ * need for the L_CODES extra codes used during heap construction. However
+ * The codes 286 and 287 are needed to build a canonical tree (see _tr_init
+ * below).
+ */
+
+var static_dtree  = new Array(D_CODES * 2);
+zero(static_dtree);
+/* The static distance tree. (Actually a trivial tree since all codes use
+ * 5 bits.)
+ */
+
+var _dist_code    = new Array(DIST_CODE_LEN);
+zero(_dist_code);
+/* Distance codes. The first 256 values correspond to the distances
+ * 3 .. 258, the last 256 values correspond to the top 8 bits of
+ * the 15 bit distances.
+ */
+
+var _length_code  = new Array(MAX_MATCH - MIN_MATCH + 1);
+zero(_length_code);
+/* length code for each normalized match length (0 == MIN_MATCH) */
+
+var base_length   = new Array(LENGTH_CODES);
+zero(base_length);
+/* First normalized length for each code (0 = MIN_MATCH) */
+
+var base_dist     = new Array(D_CODES);
+zero(base_dist);
+/* First normalized distance for each code (0 = distance of 1) */
+
+
+function StaticTreeDesc(static_tree, extra_bits, extra_base, elems, max_length) {
+
+  this.static_tree  = static_tree;  /* static tree or NULL */
+  this.extra_bits   = extra_bits;   /* extra bits for each code or NULL */
+  this.extra_base   = extra_base;   /* base index for extra_bits */
+  this.elems        = elems;        /* max number of elements in the tree */
+  this.max_length   = max_length;   /* max bit length for the codes */
+
+  // show if `static_tree` has data or dummy - needed for monomorphic objects
+  this.has_stree    = static_tree && static_tree.length;
+}
+
+
+var static_l_desc;
+var static_d_desc;
+var static_bl_desc;
+
+
+function TreeDesc(dyn_tree, stat_desc) {
+  this.dyn_tree = dyn_tree;     /* the dynamic tree */
+  this.max_code = 0;            /* largest code with non zero frequency */
+  this.stat_desc = stat_desc;   /* the corresponding static tree */
+}
+
+
+
+function d_code(dist) {
+  return dist < 256 ? _dist_code[dist] : _dist_code[256 + (dist >>> 7)];
+}
+
+
+/* ===========================================================================
+ * Output a short LSB first on the stream.
+ * IN assertion: there is enough room in pendingBuf.
+ */
+function put_short(s, w) {
+//    put_byte(s, (uch)((w) & 0xff));
+//    put_byte(s, (uch)((ush)(w) >> 8));
+  s.pending_buf[s.pending++] = (w) & 0xff;
+  s.pending_buf[s.pending++] = (w >>> 8) & 0xff;
+}
+
+
+/* ===========================================================================
+ * Send a value on a given number of bits.
+ * IN assertion: length <= 16 and value fits in length bits.
+ */
+function send_bits(s, value, length) {
+  if (s.bi_valid > (Buf_size - length)) {
+    s.bi_buf |= (value << s.bi_valid) & 0xffff;
+    put_short(s, s.bi_buf);
+    s.bi_buf = value >> (Buf_size - s.bi_valid);
+    s.bi_valid += length - Buf_size;
+  } else {
+    s.bi_buf |= (value << s.bi_valid) & 0xffff;
+    s.bi_valid += length;
+  }
+}
+
+
+function send_code(s, c, tree) {
+  send_bits(s, tree[c * 2]/*.Code*/, tree[c * 2 + 1]/*.Len*/);
+}
+
+
+/* ===========================================================================
+ * Reverse the first len bits of a code, using straightforward code (a faster
+ * method would use a table)
+ * IN assertion: 1 <= len <= 15
+ */
+function bi_reverse(code, len) {
+  var res = 0;
+  do {
+    res |= code & 1;
+    code >>>= 1;
+    res <<= 1;
+  } while (--len > 0);
+  return res >>> 1;
+}
+
+
+/* ===========================================================================
+ * Flush the bit buffer, keeping at most 7 bits in it.
+ */
+function bi_flush(s) {
+  if (s.bi_valid === 16) {
+    put_short(s, s.bi_buf);
+    s.bi_buf = 0;
+    s.bi_valid = 0;
+
+  } else if (s.bi_valid >= 8) {
+    s.pending_buf[s.pending++] = s.bi_buf & 0xff;
+    s.bi_buf >>= 8;
+    s.bi_valid -= 8;
+  }
+}
+
+
+/* ===========================================================================
+ * Compute the optimal bit lengths for a tree and update the total bit length
+ * for the current block.
+ * IN assertion: the fields freq and dad are set, heap[heap_max] and
+ *    above are the tree nodes sorted by increasing frequency.
+ * OUT assertions: the field len is set to the optimal bit length, the
+ *     array bl_count contains the frequencies for each bit length.
+ *     The length opt_len is updated; static_len is also updated if stree is
+ *     not null.
+ */
+function gen_bitlen(s, desc)
+//    deflate_state *s;
+//    tree_desc *desc;    /* the tree descriptor */
+{
+  var tree            = desc.dyn_tree;
+  var max_code        = desc.max_code;
+  var stree           = desc.stat_desc.static_tree;
+  var has_stree       = desc.stat_desc.has_stree;
+  var extra           = desc.stat_desc.extra_bits;
+  var base            = desc.stat_desc.extra_base;
+  var max_length      = desc.stat_desc.max_length;
+  var h;              /* heap index */
+  var n, m;           /* iterate over the tree elements */
+  var bits;           /* bit length */
+  var xbits;          /* extra bits */
+  var f;              /* frequency */
+  var overflow = 0;   /* number of elements with bit length too large */
+
+  for (bits = 0; bits <= MAX_BITS; bits++) {
+    s.bl_count[bits] = 0;
+  }
+
+  /* In a first pass, compute the optimal bit lengths (which may
+   * overflow in the case of the bit length tree).
+   */
+  tree[s.heap[s.heap_max] * 2 + 1]/*.Len*/ = 0; /* root of the heap */
+
+  for (h = s.heap_max + 1; h < HEAP_SIZE; h++) {
+    n = s.heap[h];
+    bits = tree[tree[n * 2 + 1]/*.Dad*/ * 2 + 1]/*.Len*/ + 1;
+    if (bits > max_length) {
+      bits = max_length;
+      overflow++;
+    }
+    tree[n * 2 + 1]/*.Len*/ = bits;
+    /* We overwrite tree[n].Dad which is no longer needed */
+
+    if (n > max_code) { continue; } /* not a leaf node */
+
+    s.bl_count[bits]++;
+    xbits = 0;
+    if (n >= base) {
+      xbits = extra[n - base];
+    }
+    f = tree[n * 2]/*.Freq*/;
+    s.opt_len += f * (bits + xbits);
+    if (has_stree) {
+      s.static_len += f * (stree[n * 2 + 1]/*.Len*/ + xbits);
+    }
+  }
+  if (overflow === 0) { return; }
+
+  // Trace((stderr,"\nbit length overflow\n"));
+  /* This happens for example on obj2 and pic of the Calgary corpus */
+
+  /* Find the first bit length which could increase: */
+  do {
+    bits = max_length - 1;
+    while (s.bl_count[bits] === 0) { bits--; }
+    s.bl_count[bits]--;      /* move one leaf down the tree */
+    s.bl_count[bits + 1] += 2; /* move one overflow item as its brother */
+    s.bl_count[max_length]--;
+    /* The brother of the overflow item also moves one step up,
+     * but this does not affect bl_count[max_length]
+     */
+    overflow -= 2;
+  } while (overflow > 0);
+
+  /* Now recompute all bit lengths, scanning in increasing frequency.
+   * h is still equal to HEAP_SIZE. (It is simpler to reconstruct all
+   * lengths instead of fixing only the wrong ones. This idea is taken
+   * from 'ar' written by Haruhiko Okumura.)
+   */
+  for (bits = max_length; bits !== 0; bits--) {
+    n = s.bl_count[bits];
+    while (n !== 0) {
+      m = s.heap[--h];
+      if (m > max_code) { continue; }
+      if (tree[m * 2 + 1]/*.Len*/ !== bits) {
+        // Trace((stderr,"code %d bits %d->%d\n", m, tree[m].Len, bits));
+        s.opt_len += (bits - tree[m * 2 + 1]/*.Len*/) * tree[m * 2]/*.Freq*/;
+        tree[m * 2 + 1]/*.Len*/ = bits;
+      }
+      n--;
+    }
+  }
+}
+
+
+/* ===========================================================================
+ * Generate the codes for a given tree and bit counts (which need not be
+ * optimal).
+ * IN assertion: the array bl_count contains the bit length statistics for
+ * the given tree and the field len is set for all tree elements.
+ * OUT assertion: the field code is set for all tree elements of non
+ *     zero code length.
+ */
+function gen_codes(tree, max_code, bl_count)
+//    ct_data *tree;             /* the tree to decorate */
+//    int max_code;              /* largest code with non zero frequency */
+//    ushf *bl_count;            /* number of codes at each bit length */
+{
+  var next_code = new Array(MAX_BITS + 1); /* next code value for each bit length */
+  var code = 0;              /* running code value */
+  var bits;                  /* bit index */
+  var n;                     /* code index */
+
+  /* The distribution counts are first used to generate the code values
+   * without bit reversal.
+   */
+  for (bits = 1; bits <= MAX_BITS; bits++) {
+    next_code[bits] = code = (code + bl_count[bits - 1]) << 1;
+  }
+  /* Check that the bit counts in bl_count are consistent. The last code
+   * must be all ones.
+   */
+  //Assert (code + bl_count[MAX_BITS]-1 == (1<<MAX_BITS)-1,
+  //        "inconsistent bit counts");
+  //Tracev((stderr,"\ngen_codes: max_code %d ", max_code));
+
+  for (n = 0;  n <= max_code; n++) {
+    var len = tree[n * 2 + 1]/*.Len*/;
+    if (len === 0) { continue; }
+    /* Now reverse the bits */
+    tree[n * 2]/*.Code*/ = bi_reverse(next_code[len]++, len);
+
+    //Tracecv(tree != static_ltree, (stderr,"\nn %3d %c l %2d c %4x (%x) ",
+    //     n, (isgraph(n) ? n : ' '), len, tree[n].Code, next_code[len]-1));
+  }
+}
+
+
+/* ===========================================================================
+ * Initialize the various 'constant' tables.
+ */
+function tr_static_init() {
+  var n;        /* iterates over tree elements */
+  var bits;     /* bit counter */
+  var length;   /* length value */
+  var code;     /* code value */
+  var dist;     /* distance index */
+  var bl_count = new Array(MAX_BITS + 1);
+  /* number of codes at each bit length for an optimal tree */
+
+  // do check in _tr_init()
+  //if (static_init_done) return;
+
+  /* For some embedded targets, global variables are not initialized: */
+/*#ifdef NO_INIT_GLOBAL_POINTERS
+  static_l_desc.static_tree = static_ltree;
+  static_l_desc.extra_bits = extra_lbits;
+  static_d_desc.static_tree = static_dtree;
+  static_d_desc.extra_bits = extra_dbits;
+  static_bl_desc.extra_bits = extra_blbits;
+#endif*/
+
+  /* Initialize the mapping length (0..255) -> length code (0..28) */
+  length = 0;
+  for (code = 0; code < LENGTH_CODES - 1; code++) {
+    base_length[code] = length;
+    for (n = 0; n < (1 << extra_lbits[code]); n++) {
+      _length_code[length++] = code;
+    }
+  }
+  //Assert (length == 256, "tr_static_init: length != 256");
+  /* Note that the length 255 (match length 258) can be represented
+   * in two different ways: code 284 + 5 bits or code 285, so we
+   * overwrite length_code[255] to use the best encoding:
+   */
+  _length_code[length - 1] = code;
+
+  /* Initialize the mapping dist (0..32K) -> dist code (0..29) */
+  dist = 0;
+  for (code = 0; code < 16; code++) {
+    base_dist[code] = dist;
+    for (n = 0; n < (1 << extra_dbits[code]); n++) {
+      _dist_code[dist++] = code;
+    }
+  }
+  //Assert (dist == 256, "tr_static_init: dist != 256");
+  dist >>= 7; /* from now on, all distances are divided by 128 */
+  for (; code < D_CODES; code++) {
+    base_dist[code] = dist << 7;
+    for (n = 0; n < (1 << (extra_dbits[code] - 7)); n++) {
+      _dist_code[256 + dist++] = code;
+    }
+  }
+  //Assert (dist == 256, "tr_static_init: 256+dist != 512");
+
+  /* Construct the codes of the static literal tree */
+  for (bits = 0; bits <= MAX_BITS; bits++) {
+    bl_count[bits] = 0;
+  }
+
+  n = 0;
+  while (n <= 143) {
+    static_ltree[n * 2 + 1]/*.Len*/ = 8;
+    n++;
+    bl_count[8]++;
+  }
+  while (n <= 255) {
+    static_ltree[n * 2 + 1]/*.Len*/ = 9;
+    n++;
+    bl_count[9]++;
+  }
+  while (n <= 279) {
+    static_ltree[n * 2 + 1]/*.Len*/ = 7;
+    n++;
+    bl_count[7]++;
+  }
+  while (n <= 287) {
+    static_ltree[n * 2 + 1]/*.Len*/ = 8;
+    n++;
+    bl_count[8]++;
+  }
+  /* Codes 286 and 287 do not exist, but we must include them in the
+   * tree construction to get a canonical Huffman tree (longest code
+   * all ones)
+   */
+  gen_codes(static_ltree, L_CODES + 1, bl_count);
+
+  /* The static distance tree is trivial: */
+  for (n = 0; n < D_CODES; n++) {
+    static_dtree[n * 2 + 1]/*.Len*/ = 5;
+    static_dtree[n * 2]/*.Code*/ = bi_reverse(n, 5);
+  }
+
+  // Now data ready and we can init static trees
+  static_l_desc = new StaticTreeDesc(static_ltree, extra_lbits, LITERALS + 1, L_CODES, MAX_BITS);
+  static_d_desc = new StaticTreeDesc(static_dtree, extra_dbits, 0,          D_CODES, MAX_BITS);
+  static_bl_desc = new StaticTreeDesc(new Array(0), extra_blbits, 0,         BL_CODES, MAX_BL_BITS);
+
+  //static_init_done = true;
+}
+
+
+/* ===========================================================================
+ * Initialize a new block.
+ */
+function init_block(s) {
+  var n; /* iterates over tree elements */
+
+  /* Initialize the trees. */
+  for (n = 0; n < L_CODES;  n++) { s.dyn_ltree[n * 2]/*.Freq*/ = 0; }
+  for (n = 0; n < D_CODES;  n++) { s.dyn_dtree[n * 2]/*.Freq*/ = 0; }
+  for (n = 0; n < BL_CODES; n++) { s.bl_tree[n * 2]/*.Freq*/ = 0; }
+
+  s.dyn_ltree[END_BLOCK * 2]/*.Freq*/ = 1;
+  s.opt_len = s.static_len = 0;
+  s.last_lit = s.matches = 0;
+}
+
+
+/* ===========================================================================
+ * Flush the bit buffer and align the output on a byte boundary
+ */
+function bi_windup(s)
+{
+  if (s.bi_valid > 8) {
+    put_short(s, s.bi_buf);
+  } else if (s.bi_valid > 0) {
+    //put_byte(s, (Byte)s->bi_buf);
+    s.pending_buf[s.pending++] = s.bi_buf;
+  }
+  s.bi_buf = 0;
+  s.bi_valid = 0;
+}
+
+/* ===========================================================================
+ * Copy a stored block, storing first the length and its
+ * one's complement if requested.
+ */
+function copy_block(s, buf, len, header)
+//DeflateState *s;
+//charf    *buf;    /* the input data */
+//unsigned len;     /* its length */
+//int      header;  /* true if block header must be written */
+{
+  bi_windup(s);        /* align on byte boundary */
+
+  if (header) {
+    put_short(s, len);
+    put_short(s, ~len);
+  }
+//  while (len--) {
+//    put_byte(s, *buf++);
+//  }
+  utils.arraySet(s.pending_buf, s.window, buf, len, s.pending);
+  s.pending += len;
+}
+
+/* ===========================================================================
+ * Compares to subtrees, using the tree depth as tie breaker when
+ * the subtrees have equal frequency. This minimizes the worst case length.
+ */
+function smaller(tree, n, m, depth) {
+  var _n2 = n * 2;
+  var _m2 = m * 2;
+  return (tree[_n2]/*.Freq*/ < tree[_m2]/*.Freq*/ ||
+         (tree[_n2]/*.Freq*/ === tree[_m2]/*.Freq*/ && depth[n] <= depth[m]));
+}
+
+/* ===========================================================================
+ * Restore the heap property by moving down the tree starting at node k,
+ * exchanging a node with the smallest of its two sons if necessary, stopping
+ * when the heap property is re-established (each father smaller than its
+ * two sons).
+ */
+function pqdownheap(s, tree, k)
+//    deflate_state *s;
+//    ct_data *tree;  /* the tree to restore */
+//    int k;               /* node to move down */
+{
+  var v = s.heap[k];
+  var j = k << 1;  /* left son of k */
+  while (j <= s.heap_len) {
+    /* Set j to the smallest of the two sons: */
+    if (j < s.heap_len &&
+      smaller(tree, s.heap[j + 1], s.heap[j], s.depth)) {
+      j++;
+    }
+    /* Exit if v is smaller than both sons */
+    if (smaller(tree, v, s.heap[j], s.depth)) { break; }
+
+    /* Exchange v with the smallest son */
+    s.heap[k] = s.heap[j];
+    k = j;
+
+    /* And continue down the tree, setting j to the left son of k */
+    j <<= 1;
+  }
+  s.heap[k] = v;
+}
+
+
+// inlined manually
+// var SMALLEST = 1;
+
+/* ===========================================================================
+ * Send the block data compressed using the given Huffman trees
+ */
+function compress_block(s, ltree, dtree)
+//    deflate_state *s;
+//    const ct_data *ltree; /* literal tree */
+//    const ct_data *dtree; /* distance tree */
+{
+  var dist;           /* distance of matched string */
+  var lc;             /* match length or unmatched char (if dist == 0) */
+  var lx = 0;         /* running index in l_buf */
+  var code;           /* the code to send */
+  var extra;          /* number of extra bits to send */
+
+  if (s.last_lit !== 0) {
+    do {
+      dist = (s.pending_buf[s.d_buf + lx * 2] << 8) | (s.pending_buf[s.d_buf + lx * 2 + 1]);
+      lc = s.pending_buf[s.l_buf + lx];
+      lx++;
+
+      if (dist === 0) {
+        send_code(s, lc, ltree); /* send a literal byte */
+        //Tracecv(isgraph(lc), (stderr," '%c' ", lc));
+      } else {
+        /* Here, lc is the match length - MIN_MATCH */
+        code = _length_code[lc];
+        send_code(s, code + LITERALS + 1, ltree); /* send the length code */
+        extra = extra_lbits[code];
+        if (extra !== 0) {
+          lc -= base_length[code];
+          send_bits(s, lc, extra);       /* send the extra length bits */
+        }
+        dist--; /* dist is now the match distance - 1 */
+        code = d_code(dist);
+        //Assert (code < D_CODES, "bad d_code");
+
+        send_code(s, code, dtree);       /* send the distance code */
+        extra = extra_dbits[code];
+        if (extra !== 0) {
+          dist -= base_dist[code];
+          send_bits(s, dist, extra);   /* send the extra distance bits */
+        }
+      } /* literal or match pair ? */
+
+      /* Check that the overlay between pending_buf and d_buf+l_buf is ok: */
+      //Assert((uInt)(s->pending) < s->lit_bufsize + 2*lx,
+      //       "pendingBuf overflow");
+
+    } while (lx < s.last_lit);
+  }
+
+  send_code(s, END_BLOCK, ltree);
+}
+
+
+/* ===========================================================================
+ * Construct one Huffman tree and assigns the code bit strings and lengths.
+ * Update the total bit length for the current block.
+ * IN assertion: the field freq is set for all tree elements.
+ * OUT assertions: the fields len and code are set to the optimal bit length
+ *     and corresponding code. The length opt_len is updated; static_len is
+ *     also updated if stree is not null. The field max_code is set.
+ */
+function build_tree(s, desc)
+//    deflate_state *s;
+//    tree_desc *desc; /* the tree descriptor */
+{
+  var tree     = desc.dyn_tree;
+  var stree    = desc.stat_desc.static_tree;
+  var has_stree = desc.stat_desc.has_stree;
+  var elems    = desc.stat_desc.elems;
+  var n, m;          /* iterate over heap elements */
+  var max_code = -1; /* largest code with non zero frequency */
+  var node;          /* new node being created */
+
+  /* Construct the initial heap, with least frequent element in
+   * heap[SMALLEST]. The sons of heap[n] are heap[2*n] and heap[2*n+1].
+   * heap[0] is not used.
+   */
+  s.heap_len = 0;
+  s.heap_max = HEAP_SIZE;
+
+  for (n = 0; n < elems; n++) {
+    if (tree[n * 2]/*.Freq*/ !== 0) {
+      s.heap[++s.heap_len] = max_code = n;
+      s.depth[n] = 0;
+
+    } else {
+      tree[n * 2 + 1]/*.Len*/ = 0;
+    }
+  }
+
+  /* The pkzip format requires that at least one distance code exists,
+   * and that at least one bit should be sent even if there is only one
+   * possible code. So to avoid special checks later on we force at least
+   * two codes of non zero frequency.
+   */
+  while (s.heap_len < 2) {
+    node = s.heap[++s.heap_len] = (max_code < 2 ? ++max_code : 0);
+    tree[node * 2]/*.Freq*/ = 1;
+    s.depth[node] = 0;
+    s.opt_len--;
+
+    if (has_stree) {
+      s.static_len -= stree[node * 2 + 1]/*.Len*/;
+    }
+    /* node is 0 or 1 so it does not have extra bits */
+  }
+  desc.max_code = max_code;
+
+  /* The elements heap[heap_len/2+1 .. heap_len] are leaves of the tree,
+   * establish sub-heaps of increasing lengths:
+   */
+  for (n = (s.heap_len >> 1/*int /2*/); n >= 1; n--) { pqdownheap(s, tree, n); }
+
+  /* Construct the Huffman tree by repeatedly combining the least two
+   * frequent nodes.
+   */
+  node = elems;              /* next internal node of the tree */
+  do {
+    //pqremove(s, tree, n);  /* n = node of least frequency */
+    /*** pqremove ***/
+    n = s.heap[1/*SMALLEST*/];
+    s.heap[1/*SMALLEST*/] = s.heap[s.heap_len--];
+    pqdownheap(s, tree, 1/*SMALLEST*/);
+    /***/
+
+    m = s.heap[1/*SMALLEST*/]; /* m = node of next least frequency */
+
+    s.heap[--s.heap_max] = n; /* keep the nodes sorted by frequency */
+    s.heap[--s.heap_max] = m;
+
+    /* Create a new node father of n and m */
+    tree[node * 2]/*.Freq*/ = tree[n * 2]/*.Freq*/ + tree[m * 2]/*.Freq*/;
+    s.depth[node] = (s.depth[n] >= s.depth[m] ? s.depth[n] : s.depth[m]) + 1;
+    tree[n * 2 + 1]/*.Dad*/ = tree[m * 2 + 1]/*.Dad*/ = node;
+
+    /* and insert the new node in the heap */
+    s.heap[1/*SMALLEST*/] = node++;
+    pqdownheap(s, tree, 1/*SMALLEST*/);
+
+  } while (s.heap_len >= 2);
+
+  s.heap[--s.heap_max] = s.heap[1/*SMALLEST*/];
+
+  /* At this point, the fields freq and dad are set. We can now
+   * generate the bit lengths.
+   */
+  gen_bitlen(s, desc);
+
+  /* The field len is now set, we can generate the bit codes */
+  gen_codes(tree, max_code, s.bl_count);
+}
+
+
+/* ===========================================================================
+ * Scan a literal or distance tree to determine the frequencies of the codes
+ * in the bit length tree.
+ */
+function scan_tree(s, tree, max_code)
+//    deflate_state *s;
+//    ct_data *tree;   /* the tree to be scanned */
+//    int max_code;    /* and its largest code of non zero frequency */
+{
+  var n;                     /* iterates over all tree elements */
+  var prevlen = -1;          /* last emitted length */
+  var curlen;                /* length of current code */
+
+  var nextlen = tree[0 * 2 + 1]/*.Len*/; /* length of next code */
+
+  var count = 0;             /* repeat count of the current code */
+  var max_count = 7;         /* max repeat count */
+  var min_count = 4;         /* min repeat count */
+
+  if (nextlen === 0) {
+    max_count = 138;
+    min_count = 3;
+  }
+  tree[(max_code + 1) * 2 + 1]/*.Len*/ = 0xffff; /* guard */
+
+  for (n = 0; n <= max_code; n++) {
+    curlen = nextlen;
+    nextlen = tree[(n + 1) * 2 + 1]/*.Len*/;
+
+    if (++count < max_count && curlen === nextlen) {
+      continue;
+
+    } else if (count < min_count) {
+      s.bl_tree[curlen * 2]/*.Freq*/ += count;
+
+    } else if (curlen !== 0) {
+
+      if (curlen !== prevlen) { s.bl_tree[curlen * 2]/*.Freq*/++; }
+      s.bl_tree[REP_3_6 * 2]/*.Freq*/++;
+
+    } else if (count <= 10) {
+      s.bl_tree[REPZ_3_10 * 2]/*.Freq*/++;
+
+    } else {
+      s.bl_tree[REPZ_11_138 * 2]/*.Freq*/++;
+    }
+
+    count = 0;
+    prevlen = curlen;
+
+    if (nextlen === 0) {
+      max_count = 138;
+      min_count = 3;
+
+    } else if (curlen === nextlen) {
+      max_count = 6;
+      min_count = 3;
+
+    } else {
+      max_count = 7;
+      min_count = 4;
+    }
+  }
+}
+
+
+/* ===========================================================================
+ * Send a literal or distance tree in compressed form, using the codes in
+ * bl_tree.
+ */
+function send_tree(s, tree, max_code)
+//    deflate_state *s;
+//    ct_data *tree; /* the tree to be scanned */
+//    int max_code;       /* and its largest code of non zero frequency */
+{
+  var n;                     /* iterates over all tree elements */
+  var prevlen = -1;          /* last emitted length */
+  var curlen;                /* length of current code */
+
+  var nextlen = tree[0 * 2 + 1]/*.Len*/; /* length of next code */
+
+  var count = 0;             /* repeat count of the current code */
+  var max_count = 7;         /* max repeat count */
+  var min_count = 4;         /* min repeat count */
+
+  /* tree[max_code+1].Len = -1; */  /* guard already set */
+  if (nextlen === 0) {
+    max_count = 138;
+    min_count = 3;
+  }
+
+  for (n = 0; n <= max_code; n++) {
+    curlen = nextlen;
+    nextlen = tree[(n + 1) * 2 + 1]/*.Len*/;
+
+    if (++count < max_count && curlen === nextlen) {
+      continue;
+
+    } else if (count < min_count) {
+      do { send_code(s, curlen, s.bl_tree); } while (--count !== 0);
+
+    } else if (curlen !== 0) {
+      if (curlen !== prevlen) {
+        send_code(s, curlen, s.bl_tree);
+        count--;
+      }
+      //Assert(count >= 3 && count <= 6, " 3_6?");
+      send_code(s, REP_3_6, s.bl_tree);
+      send_bits(s, count - 3, 2);
+
+    } else if (count <= 10) {
+      send_code(s, REPZ_3_10, s.bl_tree);
+      send_bits(s, count - 3, 3);
+
+    } else {
+      send_code(s, REPZ_11_138, s.bl_tree);
+      send_bits(s, count - 11, 7);
+    }
+
+    count = 0;
+    prevlen = curlen;
+    if (nextlen === 0) {
+      max_count = 138;
+      min_count = 3;
+
+    } else if (curlen === nextlen) {
+      max_count = 6;
+      min_count = 3;
+
+    } else {
+      max_count = 7;
+      min_count = 4;
+    }
+  }
+}
+
+
+/* ===========================================================================
+ * Construct the Huffman tree for the bit lengths and return the index in
+ * bl_order of the last bit length code to send.
+ */
+function build_bl_tree(s) {
+  var max_blindex;  /* index of last bit length code of non zero freq */
+
+  /* Determine the bit length frequencies for literal and distance trees */
+  scan_tree(s, s.dyn_ltree, s.l_desc.max_code);
+  scan_tree(s, s.dyn_dtree, s.d_desc.max_code);
+
+  /* Build the bit length tree: */
+  build_tree(s, s.bl_desc);
+  /* opt_len now includes the length of the tree representations, except
+   * the lengths of the bit lengths codes and the 5+5+4 bits for the counts.
+   */
+
+  /* Determine the number of bit length codes to send. The pkzip format
+   * requires that at least 4 bit length codes be sent. (appnote.txt says
+   * 3 but the actual value used is 4.)
+   */
+  for (max_blindex = BL_CODES - 1; max_blindex >= 3; max_blindex--) {
+    if (s.bl_tree[bl_order[max_blindex] * 2 + 1]/*.Len*/ !== 0) {
+      break;
+    }
+  }
+  /* Update opt_len to include the bit length tree and counts */
+  s.opt_len += 3 * (max_blindex + 1) + 5 + 5 + 4;
+  //Tracev((stderr, "\ndyn trees: dyn %ld, stat %ld",
+  //        s->opt_len, s->static_len));
+
+  return max_blindex;
+}
+
+
+/* ===========================================================================
+ * Send the header for a block using dynamic Huffman trees: the counts, the
+ * lengths of the bit length codes, the literal tree and the distance tree.
+ * IN assertion: lcodes >= 257, dcodes >= 1, blcodes >= 4.
+ */
+function send_all_trees(s, lcodes, dcodes, blcodes)
+//    deflate_state *s;
+//    int lcodes, dcodes, blcodes; /* number of codes for each tree */
+{
+  var rank;                    /* index in bl_order */
+
+  //Assert (lcodes >= 257 && dcodes >= 1 && blcodes >= 4, "not enough codes");
+  //Assert (lcodes <= L_CODES && dcodes <= D_CODES && blcodes <= BL_CODES,
+  //        "too many codes");
+  //Tracev((stderr, "\nbl counts: "));
+  send_bits(s, lcodes - 257, 5); /* not +255 as stated in appnote.txt */
+  send_bits(s, dcodes - 1,   5);
+  send_bits(s, blcodes - 4,  4); /* not -3 as stated in appnote.txt */
+  for (rank = 0; rank < blcodes; rank++) {
+    //Tracev((stderr, "\nbl code %2d ", bl_order[rank]));
+    send_bits(s, s.bl_tree[bl_order[rank] * 2 + 1]/*.Len*/, 3);
+  }
+  //Tracev((stderr, "\nbl tree: sent %ld", s->bits_sent));
+
+  send_tree(s, s.dyn_ltree, lcodes - 1); /* literal tree */
+  //Tracev((stderr, "\nlit tree: sent %ld", s->bits_sent));
+
+  send_tree(s, s.dyn_dtree, dcodes - 1); /* distance tree */
+  //Tracev((stderr, "\ndist tree: sent %ld", s->bits_sent));
+}
+
+
+/* ===========================================================================
+ * Check if the data type is TEXT or BINARY, using the following algorithm:
+ * - TEXT if the two conditions below are satisfied:
+ *    a) There are no non-portable control characters belonging to the
+ *       "black list" (0..6, 14..25, 28..31).
+ *    b) There is at least one printable character belonging to the
+ *       "white list" (9 {TAB}, 10 {LF}, 13 {CR}, 32..255).
+ * - BINARY otherwise.
+ * - The following partially-portable control characters form a
+ *   "gray list" that is ignored in this detection algorithm:
+ *   (7 {BEL}, 8 {BS}, 11 {VT}, 12 {FF}, 26 {SUB}, 27 {ESC}).
+ * IN assertion: the fields Freq of dyn_ltree are set.
+ */
+function detect_data_type(s) {
+  /* black_mask is the bit mask of black-listed bytes
+   * set bits 0..6, 14..25, and 28..31
+   * 0xf3ffc07f = binary 11110011111111111100000001111111
+   */
+  var black_mask = 0xf3ffc07f;
+  var n;
+
+  /* Check for non-textual ("black-listed") bytes. */
+  for (n = 0; n <= 31; n++, black_mask >>>= 1) {
+    if ((black_mask & 1) && (s.dyn_ltree[n * 2]/*.Freq*/ !== 0)) {
+      return Z_BINARY;
+    }
+  }
+
+  /* Check for textual ("white-listed") bytes. */
+  if (s.dyn_ltree[9 * 2]/*.Freq*/ !== 0 || s.dyn_ltree[10 * 2]/*.Freq*/ !== 0 ||
+      s.dyn_ltree[13 * 2]/*.Freq*/ !== 0) {
+    return Z_TEXT;
+  }
+  for (n = 32; n < LITERALS; n++) {
+    if (s.dyn_ltree[n * 2]/*.Freq*/ !== 0) {
+      return Z_TEXT;
+    }
+  }
+
+  /* There are no "black-listed" or "white-listed" bytes:
+   * this stream either is empty or has tolerated ("gray-listed") bytes only.
+   */
+  return Z_BINARY;
+}
+
+
+var static_init_done = false;
+
+/* ===========================================================================
+ * Initialize the tree data structures for a new zlib stream.
+ */
+function _tr_init(s)
+{
+
+  if (!static_init_done) {
+    tr_static_init();
+    static_init_done = true;
+  }
+
+  s.l_desc  = new TreeDesc(s.dyn_ltree, static_l_desc);
+  s.d_desc  = new TreeDesc(s.dyn_dtree, static_d_desc);
+  s.bl_desc = new TreeDesc(s.bl_tree, static_bl_desc);
+
+  s.bi_buf = 0;
+  s.bi_valid = 0;
+
+  /* Initialize the first block of the first file: */
+  init_block(s);
+}
+
+
+/* ===========================================================================
+ * Send a stored block
+ */
+function _tr_stored_block(s, buf, stored_len, last)
+//DeflateState *s;
+//charf *buf;       /* input block */
+//ulg stored_len;   /* length of input block */
+//int last;         /* one if this is the last block for a file */
+{
+  send_bits(s, (STORED_BLOCK << 1) + (last ? 1 : 0), 3);    /* send block type */
+  copy_block(s, buf, stored_len, true); /* with header */
+}
+
+
+/* ===========================================================================
+ * Send one empty static block to give enough lookahead for inflate.
+ * This takes 10 bits, of which 7 may remain in the bit buffer.
+ */
+function _tr_align(s) {
+  send_bits(s, STATIC_TREES << 1, 3);
+  send_code(s, END_BLOCK, static_ltree);
+  bi_flush(s);
+}
+
+
+/* ===========================================================================
+ * Determine the best encoding for the current block: dynamic trees, static
+ * trees or store, and output the encoded block to the zip file.
+ */
+function _tr_flush_block(s, buf, stored_len, last)
+//DeflateState *s;
+//charf *buf;       /* input block, or NULL if too old */
+//ulg stored_len;   /* length of input block */
+//int last;         /* one if this is the last block for a file */
+{
+  var opt_lenb, static_lenb;  /* opt_len and static_len in bytes */
+  var max_blindex = 0;        /* index of last bit length code of non zero freq */
+
+  /* Build the Huffman trees unless a stored block is forced */
+  if (s.level > 0) {
+
+    /* Check if the file is binary or text */
+    if (s.strm.data_type === Z_UNKNOWN) {
+      s.strm.data_type = detect_data_type(s);
+    }
+
+    /* Construct the literal and distance trees */
+    build_tree(s, s.l_desc);
+    // Tracev((stderr, "\nlit data: dyn %ld, stat %ld", s->opt_len,
+    //        s->static_len));
+
+    build_tree(s, s.d_desc);
+    // Tracev((stderr, "\ndist data: dyn %ld, stat %ld", s->opt_len,
+    //        s->static_len));
+    /* At this point, opt_len and static_len are the total bit lengths of
+     * the compressed block data, excluding the tree representations.
+     */
+
+    /* Build the bit length tree for the above two trees, and get the index
+     * in bl_order of the last bit length code to send.
+     */
+    max_blindex = build_bl_tree(s);
+
+    /* Determine the best encoding. Compute the block lengths in bytes. */
+    opt_lenb = (s.opt_len + 3 + 7) >>> 3;
+    static_lenb = (s.static_len + 3 + 7) >>> 3;
+
+    // Tracev((stderr, "\nopt %lu(%lu) stat %lu(%lu) stored %lu lit %u ",
+    //        opt_lenb, s->opt_len, static_lenb, s->static_len, stored_len,
+    //        s->last_lit));
+
+    if (static_lenb <= opt_lenb) { opt_lenb = static_lenb; }
+
+  } else {
+    // Assert(buf != (char*)0, "lost buf");
+    opt_lenb = static_lenb = stored_len + 5; /* force a stored block */
+  }
+
+  if ((stored_len + 4 <= opt_lenb) && (buf !== -1)) {
+    /* 4: two words for the lengths */
+
+    /* The test buf != NULL is only necessary if LIT_BUFSIZE > WSIZE.
+     * Otherwise we can't have processed more than WSIZE input bytes since
+     * the last block flush, because compression would have been
+     * successful. If LIT_BUFSIZE <= WSIZE, it is never too late to
+     * transform a block into a stored block.
+     */
+    _tr_stored_block(s, buf, stored_len, last);
+
+  } else if (s.strategy === Z_FIXED || static_lenb === opt_lenb) {
+
+    send_bits(s, (STATIC_TREES << 1) + (last ? 1 : 0), 3);
+    compress_block(s, static_ltree, static_dtree);
+
+  } else {
+    send_bits(s, (DYN_TREES << 1) + (last ? 1 : 0), 3);
+    send_all_trees(s, s.l_desc.max_code + 1, s.d_desc.max_code + 1, max_blindex + 1);
+    compress_block(s, s.dyn_ltree, s.dyn_dtree);
+  }
+  // Assert (s->compressed_len == s->bits_sent, "bad compressed size");
+  /* The above check is made mod 2^32, for files larger than 512 MB
+   * and uLong implemented on 32 bits.
+   */
+  init_block(s);
+
+  if (last) {
+    bi_windup(s);
+  }
+  // Tracev((stderr,"\ncomprlen %lu(%lu) ", s->compressed_len>>3,
+  //       s->compressed_len-7*last));
+}
+
+/* ===========================================================================
+ * Save the match info and tally the frequency counts. Return true if
+ * the current block must be flushed.
+ */
+function _tr_tally(s, dist, lc)
+//    deflate_state *s;
+//    unsigned dist;  /* distance of matched string */
+//    unsigned lc;    /* match length-MIN_MATCH or unmatched char (if dist==0) */
+{
+  //var out_length, in_length, dcode;
+
+  s.pending_buf[s.d_buf + s.last_lit * 2]     = (dist >>> 8) & 0xff;
+  s.pending_buf[s.d_buf + s.last_lit * 2 + 1] = dist & 0xff;
+
+  s.pending_buf[s.l_buf + s.last_lit] = lc & 0xff;
+  s.last_lit++;
+
+  if (dist === 0) {
+    /* lc is the unmatched char */
+    s.dyn_ltree[lc * 2]/*.Freq*/++;
+  } else {
+    s.matches++;
+    /* Here, lc is the match length - MIN_MATCH */
+    dist--;             /* dist = match distance - 1 */
+    //Assert((ush)dist < (ush)MAX_DIST(s) &&
+    //       (ush)lc <= (ush)(MAX_MATCH-MIN_MATCH) &&
+    //       (ush)d_code(dist) < (ush)D_CODES,  "_tr_tally: bad match");
+
+    s.dyn_ltree[(_length_code[lc] + LITERALS + 1) * 2]/*.Freq*/++;
+    s.dyn_dtree[d_code(dist) * 2]/*.Freq*/++;
+  }
+
+// (!) This block is disabled in zlib defaults,
+// don't enable it for binary compatibility
+
+//#ifdef TRUNCATE_BLOCK
+//  /* Try to guess if it is profitable to stop the current block here */
+//  if ((s.last_lit & 0x1fff) === 0 && s.level > 2) {
+//    /* Compute an upper bound for the compressed length */
+//    out_length = s.last_lit*8;
+//    in_length = s.strstart - s.block_start;
+//
+//    for (dcode = 0; dcode < D_CODES; dcode++) {
+//      out_length += s.dyn_dtree[dcode*2]/*.Freq*/ * (5 + extra_dbits[dcode]);
+//    }
+//    out_length >>>= 3;
+//    //Tracev((stderr,"\nlast_lit %u, in %ld, out ~%ld(%ld%%) ",
+//    //       s->last_lit, in_length, out_length,
+//    //       100L - out_length*100L/in_length));
+//    if (s.matches < (s.last_lit>>1)/*int /2*/ && out_length < (in_length>>1)/*int /2*/) {
+//      return true;
+//    }
+//  }
+//#endif
+
+  return (s.last_lit === s.lit_bufsize - 1);
+  /* We avoid equality with lit_bufsize because of wraparound at 64K
+   * on 16 bit machines and because stored blocks are restricted to
+   * 64K-1 bytes.
+   */
+}
+
+exports._tr_init  = _tr_init;
+exports._tr_stored_block = _tr_stored_block;
+exports._tr_flush_block  = _tr_flush_block;
+exports._tr_tally = _tr_tally;
+exports._tr_align = _tr_align;
+
+},{"../utils/common":36}],46:[function(require,module,exports){
+'use strict';
+
+// (C) 1995-2013 Jean-loup Gailly and Mark Adler
+// (C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+//
+// This software is provided 'as-is', without any express or implied
+// warranty. In no event will the authors be held liable for any damages
+// arising from the use of this software.
+//
+// Permission is granted to anyone to use this software for any purpose,
+// including commercial applications, and to alter it and redistribute it
+// freely, subject to the following restrictions:
+//
+// 1. The origin of this software must not be misrepresented; you must not
+//   claim that you wrote the original software. If you use this software
+//   in a product, an acknowledgment in the product documentation would be
+//   appreciated but is not required.
+// 2. Altered source versions must be plainly marked as such, and must not be
+//   misrepresented as being the original software.
+// 3. This notice may not be removed or altered from any source distribution.
+
+function ZStream() {
+  /* next input byte */
+  this.input = null; // JS specific, because we have no pointers
+  this.next_in = 0;
+  /* number of bytes available at input */
+  this.avail_in = 0;
+  /* total number of input bytes read so far */
+  this.total_in = 0;
+  /* next output byte should be put there */
+  this.output = null; // JS specific, because we have no pointers
+  this.next_out = 0;
+  /* remaining free space at output */
+  this.avail_out = 0;
+  /* total number of bytes output so far */
+  this.total_out = 0;
+  /* last error message, NULL if no error */
+  this.msg = ''/*Z_NULL*/;
+  /* not visible by applications */
+  this.state = null;
+  /* best guess about the data type: binary or text */
+  this.data_type = 2/*Z_UNKNOWN*/;
+  /* adler32 value of the uncompressed data */
+  this.adler = 0;
+}
+
+module.exports = ZStream;
+
+},{}],47:[function(require,module,exports){
+(function (process){(function (){
+// 'path' module extracted from Node.js v8.11.1 (only the posix part)
+// transplited with Babel
+
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+function assertPath(path) {
+  if (typeof path !== 'string') {
+    throw new TypeError('Path must be a string. Received ' + JSON.stringify(path));
+  }
+}
+
+// Resolves . and .. elements in a path with directory names
+function normalizeStringPosix(path, allowAboveRoot) {
+  var res = '';
+  var lastSegmentLength = 0;
+  var lastSlash = -1;
+  var dots = 0;
+  var code;
+  for (var i = 0; i <= path.length; ++i) {
+    if (i < path.length)
+      code = path.charCodeAt(i);
+    else if (code === 47 /*/*/)
+      break;
+    else
+      code = 47 /*/*/;
+    if (code === 47 /*/*/) {
+      if (lastSlash === i - 1 || dots === 1) {
+        // NOOP
+      } else if (lastSlash !== i - 1 && dots === 2) {
+        if (res.length < 2 || lastSegmentLength !== 2 || res.charCodeAt(res.length - 1) !== 46 /*.*/ || res.charCodeAt(res.length - 2) !== 46 /*.*/) {
+          if (res.length > 2) {
+            var lastSlashIndex = res.lastIndexOf('/');
+            if (lastSlashIndex !== res.length - 1) {
+              if (lastSlashIndex === -1) {
+                res = '';
+                lastSegmentLength = 0;
+              } else {
+                res = res.slice(0, lastSlashIndex);
+                lastSegmentLength = res.length - 1 - res.lastIndexOf('/');
+              }
+              lastSlash = i;
+              dots = 0;
+              continue;
+            }
+          } else if (res.length === 2 || res.length === 1) {
+            res = '';
+            lastSegmentLength = 0;
+            lastSlash = i;
+            dots = 0;
+            continue;
+          }
+        }
+        if (allowAboveRoot) {
+          if (res.length > 0)
+            res += '/..';
+          else
+            res = '..';
+          lastSegmentLength = 2;
+        }
+      } else {
+        if (res.length > 0)
+          res += '/' + path.slice(lastSlash + 1, i);
+        else
+          res = path.slice(lastSlash + 1, i);
+        lastSegmentLength = i - lastSlash - 1;
+      }
+      lastSlash = i;
+      dots = 0;
+    } else if (code === 46 /*.*/ && dots !== -1) {
+      ++dots;
+    } else {
+      dots = -1;
+    }
+  }
+  return res;
+}
+
+function _format(sep, pathObject) {
+  var dir = pathObject.dir || pathObject.root;
+  var base = pathObject.base || (pathObject.name || '') + (pathObject.ext || '');
+  if (!dir) {
+    return base;
+  }
+  if (dir === pathObject.root) {
+    return dir + base;
+  }
+  return dir + sep + base;
+}
+
+var posix = {
+  // path.resolve([from ...], to)
+  resolve: function resolve() {
+    var resolvedPath = '';
+    var resolvedAbsolute = false;
+    var cwd;
+
+    for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+      var path;
+      if (i >= 0)
+        path = arguments[i];
+      else {
+        if (cwd === undefined)
+          cwd = process.cwd();
+        path = cwd;
+      }
+
+      assertPath(path);
+
+      // Skip empty entries
+      if (path.length === 0) {
+        continue;
+      }
+
+      resolvedPath = path + '/' + resolvedPath;
+      resolvedAbsolute = path.charCodeAt(0) === 47 /*/*/;
+    }
+
+    // At this point the path should be resolved to a full absolute path, but
+    // handle relative paths to be safe (might happen when process.cwd() fails)
+
+    // Normalize the path
+    resolvedPath = normalizeStringPosix(resolvedPath, !resolvedAbsolute);
+
+    if (resolvedAbsolute) {
+      if (resolvedPath.length > 0)
+        return '/' + resolvedPath;
+      else
+        return '/';
+    } else if (resolvedPath.length > 0) {
+      return resolvedPath;
+    } else {
+      return '.';
+    }
+  },
+
+  normalize: function normalize(path) {
+    assertPath(path);
+
+    if (path.length === 0) return '.';
+
+    var isAbsolute = path.charCodeAt(0) === 47 /*/*/;
+    var trailingSeparator = path.charCodeAt(path.length - 1) === 47 /*/*/;
+
+    // Normalize the path
+    path = normalizeStringPosix(path, !isAbsolute);
+
+    if (path.length === 0 && !isAbsolute) path = '.';
+    if (path.length > 0 && trailingSeparator) path += '/';
+
+    if (isAbsolute) return '/' + path;
+    return path;
+  },
+
+  isAbsolute: function isAbsolute(path) {
+    assertPath(path);
+    return path.length > 0 && path.charCodeAt(0) === 47 /*/*/;
+  },
+
+  join: function join() {
+    if (arguments.length === 0)
+      return '.';
+    var joined;
+    for (var i = 0; i < arguments.length; ++i) {
+      var arg = arguments[i];
+      assertPath(arg);
+      if (arg.length > 0) {
+        if (joined === undefined)
+          joined = arg;
+        else
+          joined += '/' + arg;
+      }
+    }
+    if (joined === undefined)
+      return '.';
+    return posix.normalize(joined);
+  },
+
+  relative: function relative(from, to) {
+    assertPath(from);
+    assertPath(to);
+
+    if (from === to) return '';
+
+    from = posix.resolve(from);
+    to = posix.resolve(to);
+
+    if (from === to) return '';
+
+    // Trim any leading backslashes
+    var fromStart = 1;
+    for (; fromStart < from.length; ++fromStart) {
+      if (from.charCodeAt(fromStart) !== 47 /*/*/)
+        break;
+    }
+    var fromEnd = from.length;
+    var fromLen = fromEnd - fromStart;
+
+    // Trim any leading backslashes
+    var toStart = 1;
+    for (; toStart < to.length; ++toStart) {
+      if (to.charCodeAt(toStart) !== 47 /*/*/)
+        break;
+    }
+    var toEnd = to.length;
+    var toLen = toEnd - toStart;
+
+    // Compare paths to find the longest common path from root
+    var length = fromLen < toLen ? fromLen : toLen;
+    var lastCommonSep = -1;
+    var i = 0;
+    for (; i <= length; ++i) {
+      if (i === length) {
+        if (toLen > length) {
+          if (to.charCodeAt(toStart + i) === 47 /*/*/) {
+            // We get here if `from` is the exact base path for `to`.
+            // For example: from='/foo/bar'; to='/foo/bar/baz'
+            return to.slice(toStart + i + 1);
+          } else if (i === 0) {
+            // We get here if `from` is the root
+            // For example: from='/'; to='/foo'
+            return to.slice(toStart + i);
+          }
+        } else if (fromLen > length) {
+          if (from.charCodeAt(fromStart + i) === 47 /*/*/) {
+            // We get here if `to` is the exact base path for `from`.
+            // For example: from='/foo/bar/baz'; to='/foo/bar'
+            lastCommonSep = i;
+          } else if (i === 0) {
+            // We get here if `to` is the root.
+            // For example: from='/foo'; to='/'
+            lastCommonSep = 0;
+          }
+        }
+        break;
+      }
+      var fromCode = from.charCodeAt(fromStart + i);
+      var toCode = to.charCodeAt(toStart + i);
+      if (fromCode !== toCode)
+        break;
+      else if (fromCode === 47 /*/*/)
+        lastCommonSep = i;
+    }
+
+    var out = '';
+    // Generate the relative path based on the path difference between `to`
+    // and `from`
+    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+      if (i === fromEnd || from.charCodeAt(i) === 47 /*/*/) {
+        if (out.length === 0)
+          out += '..';
+        else
+          out += '/..';
+      }
+    }
+
+    // Lastly, append the rest of the destination (`to`) path that comes after
+    // the common path parts
+    if (out.length > 0)
+      return out + to.slice(toStart + lastCommonSep);
+    else {
+      toStart += lastCommonSep;
+      if (to.charCodeAt(toStart) === 47 /*/*/)
+        ++toStart;
+      return to.slice(toStart);
+    }
+  },
+
+  _makeLong: function _makeLong(path) {
+    return path;
+  },
+
+  dirname: function dirname(path) {
+    assertPath(path);
+    if (path.length === 0) return '.';
+    var code = path.charCodeAt(0);
+    var hasRoot = code === 47 /*/*/;
+    var end = -1;
+    var matchedSlash = true;
+    for (var i = path.length - 1; i >= 1; --i) {
+      code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          if (!matchedSlash) {
+            end = i;
+            break;
+          }
+        } else {
+        // We saw the first non-path separator
+        matchedSlash = false;
+      }
+    }
+
+    if (end === -1) return hasRoot ? '/' : '.';
+    if (hasRoot && end === 1) return '//';
+    return path.slice(0, end);
+  },
+
+  basename: function basename(path, ext) {
+    if (ext !== undefined && typeof ext !== 'string') throw new TypeError('"ext" argument must be a string');
+    assertPath(path);
+
+    var start = 0;
+    var end = -1;
+    var matchedSlash = true;
+    var i;
+
+    if (ext !== undefined && ext.length > 0 && ext.length <= path.length) {
+      if (ext.length === path.length && ext === path) return '';
+      var extIdx = ext.length - 1;
+      var firstNonSlashEnd = -1;
+      for (i = path.length - 1; i >= 0; --i) {
+        var code = path.charCodeAt(i);
+        if (code === 47 /*/*/) {
+            // If we reached a path separator that was not part of a set of path
+            // separators at the end of the string, stop now
+            if (!matchedSlash) {
+              start = i + 1;
+              break;
+            }
+          } else {
+          if (firstNonSlashEnd === -1) {
+            // We saw the first non-path separator, remember this index in case
+            // we need it if the extension ends up not matching
+            matchedSlash = false;
+            firstNonSlashEnd = i + 1;
+          }
+          if (extIdx >= 0) {
+            // Try to match the explicit extension
+            if (code === ext.charCodeAt(extIdx)) {
+              if (--extIdx === -1) {
+                // We matched the extension, so mark this as the end of our path
+                // component
+                end = i;
+              }
+            } else {
+              // Extension does not match, so our result is the entire path
+              // component
+              extIdx = -1;
+              end = firstNonSlashEnd;
+            }
+          }
+        }
+      }
+
+      if (start === end) end = firstNonSlashEnd;else if (end === -1) end = path.length;
+      return path.slice(start, end);
+    } else {
+      for (i = path.length - 1; i >= 0; --i) {
+        if (path.charCodeAt(i) === 47 /*/*/) {
+            // If we reached a path separator that was not part of a set of path
+            // separators at the end of the string, stop now
+            if (!matchedSlash) {
+              start = i + 1;
+              break;
+            }
+          } else if (end === -1) {
+          // We saw the first non-path separator, mark this as the end of our
+          // path component
+          matchedSlash = false;
+          end = i + 1;
+        }
+      }
+
+      if (end === -1) return '';
+      return path.slice(start, end);
+    }
+  },
+
+  extname: function extname(path) {
+    assertPath(path);
+    var startDot = -1;
+    var startPart = 0;
+    var end = -1;
+    var matchedSlash = true;
+    // Track the state of characters (if any) we see before our first dot and
+    // after any path separator we find
+    var preDotState = 0;
+    for (var i = path.length - 1; i >= 0; --i) {
+      var code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          // If we reached a path separator that was not part of a set of path
+          // separators at the end of the string, stop now
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+      if (end === -1) {
+        // We saw the first non-path separator, mark this as the end of our
+        // extension
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === 46 /*.*/) {
+          // If this is our first dot, mark it as the start of our extension
+          if (startDot === -1)
+            startDot = i;
+          else if (preDotState !== 1)
+            preDotState = 1;
+      } else if (startDot !== -1) {
+        // We saw a non-dot and non-path separator before our dot, so we should
+        // have a good chance at having a non-empty extension
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+        // We saw a non-dot character immediately before the dot
+        preDotState === 0 ||
+        // The (right-most) trimmed path component is exactly '..'
+        preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+      return '';
+    }
+    return path.slice(startDot, end);
+  },
+
+  format: function format(pathObject) {
+    if (pathObject === null || typeof pathObject !== 'object') {
+      throw new TypeError('The "pathObject" argument must be of type Object. Received type ' + typeof pathObject);
+    }
+    return _format('/', pathObject);
+  },
+
+  parse: function parse(path) {
+    assertPath(path);
+
+    var ret = { root: '', dir: '', base: '', ext: '', name: '' };
+    if (path.length === 0) return ret;
+    var code = path.charCodeAt(0);
+    var isAbsolute = code === 47 /*/*/;
+    var start;
+    if (isAbsolute) {
+      ret.root = '/';
+      start = 1;
+    } else {
+      start = 0;
+    }
+    var startDot = -1;
+    var startPart = 0;
+    var end = -1;
+    var matchedSlash = true;
+    var i = path.length - 1;
+
+    // Track the state of characters (if any) we see before our first dot and
+    // after any path separator we find
+    var preDotState = 0;
+
+    // Get non-dir info
+    for (; i >= start; --i) {
+      code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          // If we reached a path separator that was not part of a set of path
+          // separators at the end of the string, stop now
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+      if (end === -1) {
+        // We saw the first non-path separator, mark this as the end of our
+        // extension
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === 46 /*.*/) {
+          // If this is our first dot, mark it as the start of our extension
+          if (startDot === -1) startDot = i;else if (preDotState !== 1) preDotState = 1;
+        } else if (startDot !== -1) {
+        // We saw a non-dot and non-path separator before our dot, so we should
+        // have a good chance at having a non-empty extension
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+    // We saw a non-dot character immediately before the dot
+    preDotState === 0 ||
+    // The (right-most) trimmed path component is exactly '..'
+    preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+      if (end !== -1) {
+        if (startPart === 0 && isAbsolute) ret.base = ret.name = path.slice(1, end);else ret.base = ret.name = path.slice(startPart, end);
+      }
+    } else {
+      if (startPart === 0 && isAbsolute) {
+        ret.name = path.slice(1, startDot);
+        ret.base = path.slice(1, end);
+      } else {
+        ret.name = path.slice(startPart, startDot);
+        ret.base = path.slice(startPart, end);
+      }
+      ret.ext = path.slice(startDot, end);
+    }
+
+    if (startPart > 0) ret.dir = path.slice(0, startPart - 1);else if (isAbsolute) ret.dir = '/';
+
+    return ret;
+  },
+
+  sep: '/',
+  delimiter: ':',
+  win32: null,
+  posix: null
+};
+
+posix.posix = posix;
+
+module.exports = posix;
+
+}).call(this)}).call(this,require('_process'))
+},{"_process":48}],48:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -3775,7 +12500,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],17:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 (function (global){(function (){
 /*! https://mths.be/punycode v1.4.1 by @mathias */
 ;(function(root) {
@@ -4312,7 +13037,7 @@ process.umask = function() { return 0; };
 }(this));
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],18:[function(require,module,exports){
+},{}],50:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -4398,7 +13123,7 @@ var isArray = Array.isArray || function (xs) {
   return Object.prototype.toString.call(xs) === '[object Array]';
 };
 
-},{}],19:[function(require,module,exports){
+},{}],51:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -4485,13 +13210,13 @@ var objectKeys = Object.keys || function (obj) {
   return res;
 };
 
-},{}],20:[function(require,module,exports){
+},{}],52:[function(require,module,exports){
 'use strict';
 
 exports.decode = exports.parse = require('./decode');
 exports.encode = exports.stringify = require('./encode');
 
-},{"./decode":18,"./encode":19}],21:[function(require,module,exports){
+},{"./decode":50,"./encode":51}],53:[function(require,module,exports){
 /*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
@@ -4558,1576 +13283,68 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":4}],22:[function(require,module,exports){
-(function (Buffer){(function (){
-;(function (sax) { // wrapper for non-node envs
-  sax.parser = function (strict, opt) { return new SAXParser(strict, opt) }
-  sax.SAXParser = SAXParser
-  sax.SAXStream = SAXStream
-  sax.createStream = createStream
+},{"buffer":12}],54:[function(require,module,exports){
+/*jshint node:true*/
+'use strict';
 
-  // When we pass the MAX_BUFFER_LENGTH position, start checking for buffer overruns.
-  // When we check, schedule the next check for MAX_BUFFER_LENGTH - (max(buffer lengths)),
-  // since that's the earliest that a buffer overrun could occur.  This way, checks are
-  // as rare as required, but as often as necessary to ensure never crossing this bound.
-  // Furthermore, buffers are only tested at most once per write(), so passing a very
-  // large string into write() might have undesirable effects, but this is manageable by
-  // the caller, so it is assumed to be safe.  Thus, a call to write() may, in the extreme
-  // edge case, result in creating at most one complete copy of the string passed in.
-  // Set to Infinity to have unlimited buffers.
-  sax.MAX_BUFFER_LENGTH = 64 * 1024
+/**
+ * Replaces characters in strings that are illegal/unsafe for filenames.
+ * Unsafe characters are either removed or replaced by a substitute set
+ * in the optional `options` object.
+ *
+ * Illegal Characters on Various Operating Systems
+ * / ? < > \ : * | "
+ * https://kb.acronis.com/content/39790
+ *
+ * Unicode Control codes
+ * C0 0x00-0x1f & C1 (0x80-0x9f)
+ * http://en.wikipedia.org/wiki/C0_and_C1_control_codes
+ *
+ * Reserved filenames on Unix-based systems (".", "..")
+ * Reserved filenames in Windows ("CON", "PRN", "AUX", "NUL", "COM1",
+ * "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+ * "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", and
+ * "LPT9") case-insesitively and with or without filename extensions.
+ *
+ * Capped at 255 characters in length.
+ * http://unix.stackexchange.com/questions/32795/what-is-the-maximum-allowed-filename-and-folder-size-with-ecryptfs
+ *
+ * @param  {String} input   Original filename
+ * @param  {Object} options {replacement: String | Function }
+ * @return {String}         Sanitized filename
+ */
 
-  var buffers = [
-    'comment', 'sgmlDecl', 'textNode', 'tagName', 'doctype',
-    'procInstName', 'procInstBody', 'entity', 'attribName',
-    'attribValue', 'cdata', 'script'
-  ]
+var truncate = require("truncate-utf8-bytes");
 
-  sax.EVENTS = [
-    'text',
-    'processinginstruction',
-    'sgmldeclaration',
-    'doctype',
-    'comment',
-    'opentagstart',
-    'attribute',
-    'opentag',
-    'closetag',
-    'opencdata',
-    'cdata',
-    'closecdata',
-    'error',
-    'end',
-    'ready',
-    'script',
-    'opennamespace',
-    'closenamespace'
-  ]
+var illegalRe = /[\/\?<>\\:\*\|"]/g;
+var controlRe = /[\x00-\x1f\x80-\x9f]/g;
+var reservedRe = /^\.+$/;
+var windowsReservedRe = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+var windowsTrailingRe = /[\. ]+$/;
 
-  function SAXParser (strict, opt) {
-    if (!(this instanceof SAXParser)) {
-      return new SAXParser(strict, opt)
-    }
-
-    var parser = this
-    clearBuffers(parser)
-    parser.q = parser.c = ''
-    parser.bufferCheckPosition = sax.MAX_BUFFER_LENGTH
-    parser.opt = opt || {}
-    parser.opt.lowercase = parser.opt.lowercase || parser.opt.lowercasetags
-    parser.looseCase = parser.opt.lowercase ? 'toLowerCase' : 'toUpperCase'
-    parser.tags = []
-    parser.closed = parser.closedRoot = parser.sawRoot = false
-    parser.tag = parser.error = null
-    parser.strict = !!strict
-    parser.noscript = !!(strict || parser.opt.noscript)
-    parser.state = S.BEGIN
-    parser.strictEntities = parser.opt.strictEntities
-    parser.ENTITIES = parser.strictEntities ? Object.create(sax.XML_ENTITIES) : Object.create(sax.ENTITIES)
-    parser.attribList = []
-
-    // namespaces form a prototype chain.
-    // it always points at the current tag,
-    // which protos to its parent tag.
-    if (parser.opt.xmlns) {
-      parser.ns = Object.create(rootNS)
-    }
-
-    // mostly just for error reporting
-    parser.trackPosition = parser.opt.position !== false
-    if (parser.trackPosition) {
-      parser.position = parser.line = parser.column = 0
-    }
-    emit(parser, 'onready')
+function sanitize(input, replacement) {
+  if (typeof input !== 'string') {
+    throw new Error('Input must be string');
   }
+  var sanitized = input
+    .replace(illegalRe, replacement)
+    .replace(controlRe, replacement)
+    .replace(reservedRe, replacement)
+    .replace(windowsReservedRe, replacement)
+    .replace(windowsTrailingRe, replacement);
+  return truncate(sanitized, 255);
+}
 
-  if (!Object.create) {
-    Object.create = function (o) {
-      function F () {}
-      F.prototype = o
-      var newf = new F()
-      return newf
-    }
+module.exports = function (input, options) {
+  var replacement = (options && options.replacement) || '';
+  var output = sanitize(input, replacement);
+  if (replacement === '') {
+    return output;
   }
+  return sanitize(output, '');
+};
 
-  if (!Object.keys) {
-    Object.keys = function (o) {
-      var a = []
-      for (var i in o) if (o.hasOwnProperty(i)) a.push(i)
-      return a
-    }
-  }
-
-  function checkBufferLength (parser) {
-    var maxAllowed = Math.max(sax.MAX_BUFFER_LENGTH, 10)
-    var maxActual = 0
-    for (var i = 0, l = buffers.length; i < l; i++) {
-      var len = parser[buffers[i]].length
-      if (len > maxAllowed) {
-        // Text/cdata nodes can get big, and since they're buffered,
-        // we can get here under normal conditions.
-        // Avoid issues by emitting the text node now,
-        // so at least it won't get any bigger.
-        switch (buffers[i]) {
-          case 'textNode':
-            closeText(parser)
-            break
-
-          case 'cdata':
-            emitNode(parser, 'oncdata', parser.cdata)
-            parser.cdata = ''
-            break
-
-          case 'script':
-            emitNode(parser, 'onscript', parser.script)
-            parser.script = ''
-            break
-
-          default:
-            error(parser, 'Max buffer length exceeded: ' + buffers[i])
-        }
-      }
-      maxActual = Math.max(maxActual, len)
-    }
-    // schedule the next check for the earliest possible buffer overrun.
-    var m = sax.MAX_BUFFER_LENGTH - maxActual
-    parser.bufferCheckPosition = m + parser.position
-  }
-
-  function clearBuffers (parser) {
-    for (var i = 0, l = buffers.length; i < l; i++) {
-      parser[buffers[i]] = ''
-    }
-  }
-
-  function flushBuffers (parser) {
-    closeText(parser)
-    if (parser.cdata !== '') {
-      emitNode(parser, 'oncdata', parser.cdata)
-      parser.cdata = ''
-    }
-    if (parser.script !== '') {
-      emitNode(parser, 'onscript', parser.script)
-      parser.script = ''
-    }
-  }
-
-  SAXParser.prototype = {
-    end: function () { end(this) },
-    write: write,
-    resume: function () { this.error = null; return this },
-    close: function () { return this.write(null) },
-    flush: function () { flushBuffers(this) }
-  }
-
-  var Stream
-  try {
-    Stream = require('stream').Stream
-  } catch (ex) {
-    Stream = function () {}
-  }
-
-  var streamWraps = sax.EVENTS.filter(function (ev) {
-    return ev !== 'error' && ev !== 'end'
-  })
-
-  function createStream (strict, opt) {
-    return new SAXStream(strict, opt)
-  }
-
-  function SAXStream (strict, opt) {
-    if (!(this instanceof SAXStream)) {
-      return new SAXStream(strict, opt)
-    }
-
-    Stream.apply(this)
-
-    this._parser = new SAXParser(strict, opt)
-    this.writable = true
-    this.readable = true
-
-    var me = this
-
-    this._parser.onend = function () {
-      me.emit('end')
-    }
-
-    this._parser.onerror = function (er) {
-      me.emit('error', er)
-
-      // if didn't throw, then means error was handled.
-      // go ahead and clear error, so we can write again.
-      me._parser.error = null
-    }
-
-    this._decoder = null
-
-    streamWraps.forEach(function (ev) {
-      Object.defineProperty(me, 'on' + ev, {
-        get: function () {
-          return me._parser['on' + ev]
-        },
-        set: function (h) {
-          if (!h) {
-            me.removeAllListeners(ev)
-            me._parser['on' + ev] = h
-            return h
-          }
-          me.on(ev, h)
-        },
-        enumerable: true,
-        configurable: false
-      })
-    })
-  }
-
-  SAXStream.prototype = Object.create(Stream.prototype, {
-    constructor: {
-      value: SAXStream
-    }
-  })
-
-  SAXStream.prototype.write = function (data) {
-    if (typeof Buffer === 'function' &&
-      typeof Buffer.isBuffer === 'function' &&
-      Buffer.isBuffer(data)) {
-      if (!this._decoder) {
-        var SD = require('string_decoder').StringDecoder
-        this._decoder = new SD('utf8')
-      }
-      data = this._decoder.write(data)
-    }
-
-    this._parser.write(data.toString())
-    this.emit('data', data)
-    return true
-  }
-
-  SAXStream.prototype.end = function (chunk) {
-    if (chunk && chunk.length) {
-      this.write(chunk)
-    }
-    this._parser.end()
-    return true
-  }
-
-  SAXStream.prototype.on = function (ev, handler) {
-    var me = this
-    if (!me._parser['on' + ev] && streamWraps.indexOf(ev) !== -1) {
-      me._parser['on' + ev] = function () {
-        var args = arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments)
-        args.splice(0, 0, ev)
-        me.emit.apply(me, args)
-      }
-    }
-
-    return Stream.prototype.on.call(me, ev, handler)
-  }
-
-  // this really needs to be replaced with character classes.
-  // XML allows all manner of ridiculous numbers and digits.
-  var CDATA = '[CDATA['
-  var DOCTYPE = 'DOCTYPE'
-  var XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace'
-  var XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/'
-  var rootNS = { xml: XML_NAMESPACE, xmlns: XMLNS_NAMESPACE }
-
-  // http://www.w3.org/TR/REC-xml/#NT-NameStartChar
-  // This implementation works on strings, a single character at a time
-  // as such, it cannot ever support astral-plane characters (10000-EFFFF)
-  // without a significant breaking change to either this  parser, or the
-  // JavaScript language.  Implementation of an emoji-capable xml parser
-  // is left as an exercise for the reader.
-  var nameStart = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
-
-  var nameBody = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
-
-  var entityStart = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
-  var entityBody = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
-
-  function isWhitespace (c) {
-    return c === ' ' || c === '\n' || c === '\r' || c === '\t'
-  }
-
-  function isQuote (c) {
-    return c === '"' || c === '\''
-  }
-
-  function isAttribEnd (c) {
-    return c === '>' || isWhitespace(c)
-  }
-
-  function isMatch (regex, c) {
-    return regex.test(c)
-  }
-
-  function notMatch (regex, c) {
-    return !isMatch(regex, c)
-  }
-
-  var S = 0
-  sax.STATE = {
-    BEGIN: S++, // leading byte order mark or whitespace
-    BEGIN_WHITESPACE: S++, // leading whitespace
-    TEXT: S++, // general stuff
-    TEXT_ENTITY: S++, // &amp and such.
-    OPEN_WAKA: S++, // <
-    SGML_DECL: S++, // <!BLARG
-    SGML_DECL_QUOTED: S++, // <!BLARG foo "bar
-    DOCTYPE: S++, // <!DOCTYPE
-    DOCTYPE_QUOTED: S++, // <!DOCTYPE "//blah
-    DOCTYPE_DTD: S++, // <!DOCTYPE "//blah" [ ...
-    DOCTYPE_DTD_QUOTED: S++, // <!DOCTYPE "//blah" [ "foo
-    COMMENT_STARTING: S++, // <!-
-    COMMENT: S++, // <!--
-    COMMENT_ENDING: S++, // <!-- blah -
-    COMMENT_ENDED: S++, // <!-- blah --
-    CDATA: S++, // <![CDATA[ something
-    CDATA_ENDING: S++, // ]
-    CDATA_ENDING_2: S++, // ]]
-    PROC_INST: S++, // <?hi
-    PROC_INST_BODY: S++, // <?hi there
-    PROC_INST_ENDING: S++, // <?hi "there" ?
-    OPEN_TAG: S++, // <strong
-    OPEN_TAG_SLASH: S++, // <strong /
-    ATTRIB: S++, // <a
-    ATTRIB_NAME: S++, // <a foo
-    ATTRIB_NAME_SAW_WHITE: S++, // <a foo _
-    ATTRIB_VALUE: S++, // <a foo=
-    ATTRIB_VALUE_QUOTED: S++, // <a foo="bar
-    ATTRIB_VALUE_CLOSED: S++, // <a foo="bar"
-    ATTRIB_VALUE_UNQUOTED: S++, // <a foo=bar
-    ATTRIB_VALUE_ENTITY_Q: S++, // <foo bar="&quot;"
-    ATTRIB_VALUE_ENTITY_U: S++, // <foo bar=&quot
-    CLOSE_TAG: S++, // </a
-    CLOSE_TAG_SAW_WHITE: S++, // </a   >
-    SCRIPT: S++, // <script> ...
-    SCRIPT_ENDING: S++ // <script> ... <
-  }
-
-  sax.XML_ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'"
-  }
-
-  sax.ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'",
-    'AElig': 198,
-    'Aacute': 193,
-    'Acirc': 194,
-    'Agrave': 192,
-    'Aring': 197,
-    'Atilde': 195,
-    'Auml': 196,
-    'Ccedil': 199,
-    'ETH': 208,
-    'Eacute': 201,
-    'Ecirc': 202,
-    'Egrave': 200,
-    'Euml': 203,
-    'Iacute': 205,
-    'Icirc': 206,
-    'Igrave': 204,
-    'Iuml': 207,
-    'Ntilde': 209,
-    'Oacute': 211,
-    'Ocirc': 212,
-    'Ograve': 210,
-    'Oslash': 216,
-    'Otilde': 213,
-    'Ouml': 214,
-    'THORN': 222,
-    'Uacute': 218,
-    'Ucirc': 219,
-    'Ugrave': 217,
-    'Uuml': 220,
-    'Yacute': 221,
-    'aacute': 225,
-    'acirc': 226,
-    'aelig': 230,
-    'agrave': 224,
-    'aring': 229,
-    'atilde': 227,
-    'auml': 228,
-    'ccedil': 231,
-    'eacute': 233,
-    'ecirc': 234,
-    'egrave': 232,
-    'eth': 240,
-    'euml': 235,
-    'iacute': 237,
-    'icirc': 238,
-    'igrave': 236,
-    'iuml': 239,
-    'ntilde': 241,
-    'oacute': 243,
-    'ocirc': 244,
-    'ograve': 242,
-    'oslash': 248,
-    'otilde': 245,
-    'ouml': 246,
-    'szlig': 223,
-    'thorn': 254,
-    'uacute': 250,
-    'ucirc': 251,
-    'ugrave': 249,
-    'uuml': 252,
-    'yacute': 253,
-    'yuml': 255,
-    'copy': 169,
-    'reg': 174,
-    'nbsp': 160,
-    'iexcl': 161,
-    'cent': 162,
-    'pound': 163,
-    'curren': 164,
-    'yen': 165,
-    'brvbar': 166,
-    'sect': 167,
-    'uml': 168,
-    'ordf': 170,
-    'laquo': 171,
-    'not': 172,
-    'shy': 173,
-    'macr': 175,
-    'deg': 176,
-    'plusmn': 177,
-    'sup1': 185,
-    'sup2': 178,
-    'sup3': 179,
-    'acute': 180,
-    'micro': 181,
-    'para': 182,
-    'middot': 183,
-    'cedil': 184,
-    'ordm': 186,
-    'raquo': 187,
-    'frac14': 188,
-    'frac12': 189,
-    'frac34': 190,
-    'iquest': 191,
-    'times': 215,
-    'divide': 247,
-    'OElig': 338,
-    'oelig': 339,
-    'Scaron': 352,
-    'scaron': 353,
-    'Yuml': 376,
-    'fnof': 402,
-    'circ': 710,
-    'tilde': 732,
-    'Alpha': 913,
-    'Beta': 914,
-    'Gamma': 915,
-    'Delta': 916,
-    'Epsilon': 917,
-    'Zeta': 918,
-    'Eta': 919,
-    'Theta': 920,
-    'Iota': 921,
-    'Kappa': 922,
-    'Lambda': 923,
-    'Mu': 924,
-    'Nu': 925,
-    'Xi': 926,
-    'Omicron': 927,
-    'Pi': 928,
-    'Rho': 929,
-    'Sigma': 931,
-    'Tau': 932,
-    'Upsilon': 933,
-    'Phi': 934,
-    'Chi': 935,
-    'Psi': 936,
-    'Omega': 937,
-    'alpha': 945,
-    'beta': 946,
-    'gamma': 947,
-    'delta': 948,
-    'epsilon': 949,
-    'zeta': 950,
-    'eta': 951,
-    'theta': 952,
-    'iota': 953,
-    'kappa': 954,
-    'lambda': 955,
-    'mu': 956,
-    'nu': 957,
-    'xi': 958,
-    'omicron': 959,
-    'pi': 960,
-    'rho': 961,
-    'sigmaf': 962,
-    'sigma': 963,
-    'tau': 964,
-    'upsilon': 965,
-    'phi': 966,
-    'chi': 967,
-    'psi': 968,
-    'omega': 969,
-    'thetasym': 977,
-    'upsih': 978,
-    'piv': 982,
-    'ensp': 8194,
-    'emsp': 8195,
-    'thinsp': 8201,
-    'zwnj': 8204,
-    'zwj': 8205,
-    'lrm': 8206,
-    'rlm': 8207,
-    'ndash': 8211,
-    'mdash': 8212,
-    'lsquo': 8216,
-    'rsquo': 8217,
-    'sbquo': 8218,
-    'ldquo': 8220,
-    'rdquo': 8221,
-    'bdquo': 8222,
-    'dagger': 8224,
-    'Dagger': 8225,
-    'bull': 8226,
-    'hellip': 8230,
-    'permil': 8240,
-    'prime': 8242,
-    'Prime': 8243,
-    'lsaquo': 8249,
-    'rsaquo': 8250,
-    'oline': 8254,
-    'frasl': 8260,
-    'euro': 8364,
-    'image': 8465,
-    'weierp': 8472,
-    'real': 8476,
-    'trade': 8482,
-    'alefsym': 8501,
-    'larr': 8592,
-    'uarr': 8593,
-    'rarr': 8594,
-    'darr': 8595,
-    'harr': 8596,
-    'crarr': 8629,
-    'lArr': 8656,
-    'uArr': 8657,
-    'rArr': 8658,
-    'dArr': 8659,
-    'hArr': 8660,
-    'forall': 8704,
-    'part': 8706,
-    'exist': 8707,
-    'empty': 8709,
-    'nabla': 8711,
-    'isin': 8712,
-    'notin': 8713,
-    'ni': 8715,
-    'prod': 8719,
-    'sum': 8721,
-    'minus': 8722,
-    'lowast': 8727,
-    'radic': 8730,
-    'prop': 8733,
-    'infin': 8734,
-    'ang': 8736,
-    'and': 8743,
-    'or': 8744,
-    'cap': 8745,
-    'cup': 8746,
-    'int': 8747,
-    'there4': 8756,
-    'sim': 8764,
-    'cong': 8773,
-    'asymp': 8776,
-    'ne': 8800,
-    'equiv': 8801,
-    'le': 8804,
-    'ge': 8805,
-    'sub': 8834,
-    'sup': 8835,
-    'nsub': 8836,
-    'sube': 8838,
-    'supe': 8839,
-    'oplus': 8853,
-    'otimes': 8855,
-    'perp': 8869,
-    'sdot': 8901,
-    'lceil': 8968,
-    'rceil': 8969,
-    'lfloor': 8970,
-    'rfloor': 8971,
-    'lang': 9001,
-    'rang': 9002,
-    'loz': 9674,
-    'spades': 9824,
-    'clubs': 9827,
-    'hearts': 9829,
-    'diams': 9830
-  }
-
-  Object.keys(sax.ENTITIES).forEach(function (key) {
-    var e = sax.ENTITIES[key]
-    var s = typeof e === 'number' ? String.fromCharCode(e) : e
-    sax.ENTITIES[key] = s
-  })
-
-  for (var s in sax.STATE) {
-    sax.STATE[sax.STATE[s]] = s
-  }
-
-  // shorthand
-  S = sax.STATE
-
-  function emit (parser, event, data) {
-    parser[event] && parser[event](data)
-  }
-
-  function emitNode (parser, nodeType, data) {
-    if (parser.textNode) closeText(parser)
-    emit(parser, nodeType, data)
-  }
-
-  function closeText (parser) {
-    parser.textNode = textopts(parser.opt, parser.textNode)
-    if (parser.textNode) emit(parser, 'ontext', parser.textNode)
-    parser.textNode = ''
-  }
-
-  function textopts (opt, text) {
-    if (opt.trim) text = text.trim()
-    if (opt.normalize) text = text.replace(/\s+/g, ' ')
-    return text
-  }
-
-  function error (parser, er) {
-    closeText(parser)
-    if (parser.trackPosition) {
-      er += '\nLine: ' + parser.line +
-        '\nColumn: ' + parser.column +
-        '\nChar: ' + parser.c
-    }
-    er = new Error(er)
-    parser.error = er
-    emit(parser, 'onerror', er)
-    return parser
-  }
-
-  function end (parser) {
-    if (parser.sawRoot && !parser.closedRoot) strictFail(parser, 'Unclosed root tag')
-    if ((parser.state !== S.BEGIN) &&
-      (parser.state !== S.BEGIN_WHITESPACE) &&
-      (parser.state !== S.TEXT)) {
-      error(parser, 'Unexpected end')
-    }
-    closeText(parser)
-    parser.c = ''
-    parser.closed = true
-    emit(parser, 'onend')
-    SAXParser.call(parser, parser.strict, parser.opt)
-    return parser
-  }
-
-  function strictFail (parser, message) {
-    if (typeof parser !== 'object' || !(parser instanceof SAXParser)) {
-      throw new Error('bad call to strictFail')
-    }
-    if (parser.strict) {
-      error(parser, message)
-    }
-  }
-
-  function newTag (parser) {
-    if (!parser.strict) parser.tagName = parser.tagName[parser.looseCase]()
-    var parent = parser.tags[parser.tags.length - 1] || parser
-    var tag = parser.tag = { name: parser.tagName, attributes: {} }
-
-    // will be overridden if tag contails an xmlns="foo" or xmlns:foo="bar"
-    if (parser.opt.xmlns) {
-      tag.ns = parent.ns
-    }
-    parser.attribList.length = 0
-    emitNode(parser, 'onopentagstart', tag)
-  }
-
-  function qname (name, attribute) {
-    var i = name.indexOf(':')
-    var qualName = i < 0 ? [ '', name ] : name.split(':')
-    var prefix = qualName[0]
-    var local = qualName[1]
-
-    // <x "xmlns"="http://foo">
-    if (attribute && name === 'xmlns') {
-      prefix = 'xmlns'
-      local = ''
-    }
-
-    return { prefix: prefix, local: local }
-  }
-
-  function attrib (parser) {
-    if (!parser.strict) {
-      parser.attribName = parser.attribName[parser.looseCase]()
-    }
-
-    if (parser.attribList.indexOf(parser.attribName) !== -1 ||
-      parser.tag.attributes.hasOwnProperty(parser.attribName)) {
-      parser.attribName = parser.attribValue = ''
-      return
-    }
-
-    if (parser.opt.xmlns) {
-      var qn = qname(parser.attribName, true)
-      var prefix = qn.prefix
-      var local = qn.local
-
-      if (prefix === 'xmlns') {
-        // namespace binding attribute. push the binding into scope
-        if (local === 'xml' && parser.attribValue !== XML_NAMESPACE) {
-          strictFail(parser,
-            'xml: prefix must be bound to ' + XML_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
-        } else if (local === 'xmlns' && parser.attribValue !== XMLNS_NAMESPACE) {
-          strictFail(parser,
-            'xmlns: prefix must be bound to ' + XMLNS_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
-        } else {
-          var tag = parser.tag
-          var parent = parser.tags[parser.tags.length - 1] || parser
-          if (tag.ns === parent.ns) {
-            tag.ns = Object.create(parent.ns)
-          }
-          tag.ns[local] = parser.attribValue
-        }
-      }
-
-      // defer onattribute events until all attributes have been seen
-      // so any new bindings can take effect. preserve attribute order
-      // so deferred events can be emitted in document order
-      parser.attribList.push([parser.attribName, parser.attribValue])
-    } else {
-      // in non-xmlns mode, we can emit the event right away
-      parser.tag.attributes[parser.attribName] = parser.attribValue
-      emitNode(parser, 'onattribute', {
-        name: parser.attribName,
-        value: parser.attribValue
-      })
-    }
-
-    parser.attribName = parser.attribValue = ''
-  }
-
-  function openTag (parser, selfClosing) {
-    if (parser.opt.xmlns) {
-      // emit namespace binding events
-      var tag = parser.tag
-
-      // add namespace info to tag
-      var qn = qname(parser.tagName)
-      tag.prefix = qn.prefix
-      tag.local = qn.local
-      tag.uri = tag.ns[qn.prefix] || ''
-
-      if (tag.prefix && !tag.uri) {
-        strictFail(parser, 'Unbound namespace prefix: ' +
-          JSON.stringify(parser.tagName))
-        tag.uri = qn.prefix
-      }
-
-      var parent = parser.tags[parser.tags.length - 1] || parser
-      if (tag.ns && parent.ns !== tag.ns) {
-        Object.keys(tag.ns).forEach(function (p) {
-          emitNode(parser, 'onopennamespace', {
-            prefix: p,
-            uri: tag.ns[p]
-          })
-        })
-      }
-
-      // handle deferred onattribute events
-      // Note: do not apply default ns to attributes:
-      //   http://www.w3.org/TR/REC-xml-names/#defaulting
-      for (var i = 0, l = parser.attribList.length; i < l; i++) {
-        var nv = parser.attribList[i]
-        var name = nv[0]
-        var value = nv[1]
-        var qualName = qname(name, true)
-        var prefix = qualName.prefix
-        var local = qualName.local
-        var uri = prefix === '' ? '' : (tag.ns[prefix] || '')
-        var a = {
-          name: name,
-          value: value,
-          prefix: prefix,
-          local: local,
-          uri: uri
-        }
-
-        // if there's any attributes with an undefined namespace,
-        // then fail on them now.
-        if (prefix && prefix !== 'xmlns' && !uri) {
-          strictFail(parser, 'Unbound namespace prefix: ' +
-            JSON.stringify(prefix))
-          a.uri = prefix
-        }
-        parser.tag.attributes[name] = a
-        emitNode(parser, 'onattribute', a)
-      }
-      parser.attribList.length = 0
-    }
-
-    parser.tag.isSelfClosing = !!selfClosing
-
-    // process the tag
-    parser.sawRoot = true
-    parser.tags.push(parser.tag)
-    emitNode(parser, 'onopentag', parser.tag)
-    if (!selfClosing) {
-      // special case for <script> in non-strict mode.
-      if (!parser.noscript && parser.tagName.toLowerCase() === 'script') {
-        parser.state = S.SCRIPT
-      } else {
-        parser.state = S.TEXT
-      }
-      parser.tag = null
-      parser.tagName = ''
-    }
-    parser.attribName = parser.attribValue = ''
-    parser.attribList.length = 0
-  }
-
-  function closeTag (parser) {
-    if (!parser.tagName) {
-      strictFail(parser, 'Weird empty close tag.')
-      parser.textNode += '</>'
-      parser.state = S.TEXT
-      return
-    }
-
-    if (parser.script) {
-      if (parser.tagName !== 'script') {
-        parser.script += '</' + parser.tagName + '>'
-        parser.tagName = ''
-        parser.state = S.SCRIPT
-        return
-      }
-      emitNode(parser, 'onscript', parser.script)
-      parser.script = ''
-    }
-
-    // first make sure that the closing tag actually exists.
-    // <a><b></c></b></a> will close everything, otherwise.
-    var t = parser.tags.length
-    var tagName = parser.tagName
-    if (!parser.strict) {
-      tagName = tagName[parser.looseCase]()
-    }
-    var closeTo = tagName
-    while (t--) {
-      var close = parser.tags[t]
-      if (close.name !== closeTo) {
-        // fail the first time in strict mode
-        strictFail(parser, 'Unexpected close tag')
-      } else {
-        break
-      }
-    }
-
-    // didn't find it.  we already failed for strict, so just abort.
-    if (t < 0) {
-      strictFail(parser, 'Unmatched closing tag: ' + parser.tagName)
-      parser.textNode += '</' + parser.tagName + '>'
-      parser.state = S.TEXT
-      return
-    }
-    parser.tagName = tagName
-    var s = parser.tags.length
-    while (s-- > t) {
-      var tag = parser.tag = parser.tags.pop()
-      parser.tagName = parser.tag.name
-      emitNode(parser, 'onclosetag', parser.tagName)
-
-      var x = {}
-      for (var i in tag.ns) {
-        x[i] = tag.ns[i]
-      }
-
-      var parent = parser.tags[parser.tags.length - 1] || parser
-      if (parser.opt.xmlns && tag.ns !== parent.ns) {
-        // remove namespace bindings introduced by tag
-        Object.keys(tag.ns).forEach(function (p) {
-          var n = tag.ns[p]
-          emitNode(parser, 'onclosenamespace', { prefix: p, uri: n })
-        })
-      }
-    }
-    if (t === 0) parser.closedRoot = true
-    parser.tagName = parser.attribValue = parser.attribName = ''
-    parser.attribList.length = 0
-    parser.state = S.TEXT
-  }
-
-  function parseEntity (parser) {
-    var entity = parser.entity
-    var entityLC = entity.toLowerCase()
-    var num
-    var numStr = ''
-
-    if (parser.ENTITIES[entity]) {
-      return parser.ENTITIES[entity]
-    }
-    if (parser.ENTITIES[entityLC]) {
-      return parser.ENTITIES[entityLC]
-    }
-    entity = entityLC
-    if (entity.charAt(0) === '#') {
-      if (entity.charAt(1) === 'x') {
-        entity = entity.slice(2)
-        num = parseInt(entity, 16)
-        numStr = num.toString(16)
-      } else {
-        entity = entity.slice(1)
-        num = parseInt(entity, 10)
-        numStr = num.toString(10)
-      }
-    }
-    entity = entity.replace(/^0+/, '')
-    if (isNaN(num) || numStr.toLowerCase() !== entity) {
-      strictFail(parser, 'Invalid character entity')
-      return '&' + parser.entity + ';'
-    }
-
-    return String.fromCodePoint(num)
-  }
-
-  function beginWhiteSpace (parser, c) {
-    if (c === '<') {
-      parser.state = S.OPEN_WAKA
-      parser.startTagPosition = parser.position
-    } else if (!isWhitespace(c)) {
-      // have to process this as a text node.
-      // weird, but happens.
-      strictFail(parser, 'Non-whitespace before first tag.')
-      parser.textNode = c
-      parser.state = S.TEXT
-    }
-  }
-
-  function charAt (chunk, i) {
-    var result = ''
-    if (i < chunk.length) {
-      result = chunk.charAt(i)
-    }
-    return result
-  }
-
-  function write (chunk) {
-    var parser = this
-    if (this.error) {
-      throw this.error
-    }
-    if (parser.closed) {
-      return error(parser,
-        'Cannot write after close. Assign an onready handler.')
-    }
-    if (chunk === null) {
-      return end(parser)
-    }
-    if (typeof chunk === 'object') {
-      chunk = chunk.toString()
-    }
-    var i = 0
-    var c = ''
-    while (true) {
-      c = charAt(chunk, i++)
-      parser.c = c
-
-      if (!c) {
-        break
-      }
-
-      if (parser.trackPosition) {
-        parser.position++
-        if (c === '\n') {
-          parser.line++
-          parser.column = 0
-        } else {
-          parser.column++
-        }
-      }
-
-      switch (parser.state) {
-        case S.BEGIN:
-          parser.state = S.BEGIN_WHITESPACE
-          if (c === '\uFEFF') {
-            continue
-          }
-          beginWhiteSpace(parser, c)
-          continue
-
-        case S.BEGIN_WHITESPACE:
-          beginWhiteSpace(parser, c)
-          continue
-
-        case S.TEXT:
-          if (parser.sawRoot && !parser.closedRoot) {
-            var starti = i - 1
-            while (c && c !== '<' && c !== '&') {
-              c = charAt(chunk, i++)
-              if (c && parser.trackPosition) {
-                parser.position++
-                if (c === '\n') {
-                  parser.line++
-                  parser.column = 0
-                } else {
-                  parser.column++
-                }
-              }
-            }
-            parser.textNode += chunk.substring(starti, i - 1)
-          }
-          if (c === '<' && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
-            parser.state = S.OPEN_WAKA
-            parser.startTagPosition = parser.position
-          } else {
-            if (!isWhitespace(c) && (!parser.sawRoot || parser.closedRoot)) {
-              strictFail(parser, 'Text data outside of root node.')
-            }
-            if (c === '&') {
-              parser.state = S.TEXT_ENTITY
-            } else {
-              parser.textNode += c
-            }
-          }
-          continue
-
-        case S.SCRIPT:
-          // only non-strict
-          if (c === '<') {
-            parser.state = S.SCRIPT_ENDING
-          } else {
-            parser.script += c
-          }
-          continue
-
-        case S.SCRIPT_ENDING:
-          if (c === '/') {
-            parser.state = S.CLOSE_TAG
-          } else {
-            parser.script += '<' + c
-            parser.state = S.SCRIPT
-          }
-          continue
-
-        case S.OPEN_WAKA:
-          // either a /, ?, !, or text is coming next.
-          if (c === '!') {
-            parser.state = S.SGML_DECL
-            parser.sgmlDecl = ''
-          } else if (isWhitespace(c)) {
-            // wait for it...
-          } else if (isMatch(nameStart, c)) {
-            parser.state = S.OPEN_TAG
-            parser.tagName = c
-          } else if (c === '/') {
-            parser.state = S.CLOSE_TAG
-            parser.tagName = ''
-          } else if (c === '?') {
-            parser.state = S.PROC_INST
-            parser.procInstName = parser.procInstBody = ''
-          } else {
-            strictFail(parser, 'Unencoded <')
-            // if there was some whitespace, then add that in.
-            if (parser.startTagPosition + 1 < parser.position) {
-              var pad = parser.position - parser.startTagPosition
-              c = new Array(pad).join(' ') + c
-            }
-            parser.textNode += '<' + c
-            parser.state = S.TEXT
-          }
-          continue
-
-        case S.SGML_DECL:
-          if ((parser.sgmlDecl + c).toUpperCase() === CDATA) {
-            emitNode(parser, 'onopencdata')
-            parser.state = S.CDATA
-            parser.sgmlDecl = ''
-            parser.cdata = ''
-          } else if (parser.sgmlDecl + c === '--') {
-            parser.state = S.COMMENT
-            parser.comment = ''
-            parser.sgmlDecl = ''
-          } else if ((parser.sgmlDecl + c).toUpperCase() === DOCTYPE) {
-            parser.state = S.DOCTYPE
-            if (parser.doctype || parser.sawRoot) {
-              strictFail(parser,
-                'Inappropriately located doctype declaration')
-            }
-            parser.doctype = ''
-            parser.sgmlDecl = ''
-          } else if (c === '>') {
-            emitNode(parser, 'onsgmldeclaration', parser.sgmlDecl)
-            parser.sgmlDecl = ''
-            parser.state = S.TEXT
-          } else if (isQuote(c)) {
-            parser.state = S.SGML_DECL_QUOTED
-            parser.sgmlDecl += c
-          } else {
-            parser.sgmlDecl += c
-          }
-          continue
-
-        case S.SGML_DECL_QUOTED:
-          if (c === parser.q) {
-            parser.state = S.SGML_DECL
-            parser.q = ''
-          }
-          parser.sgmlDecl += c
-          continue
-
-        case S.DOCTYPE:
-          if (c === '>') {
-            parser.state = S.TEXT
-            emitNode(parser, 'ondoctype', parser.doctype)
-            parser.doctype = true // just remember that we saw it.
-          } else {
-            parser.doctype += c
-            if (c === '[') {
-              parser.state = S.DOCTYPE_DTD
-            } else if (isQuote(c)) {
-              parser.state = S.DOCTYPE_QUOTED
-              parser.q = c
-            }
-          }
-          continue
-
-        case S.DOCTYPE_QUOTED:
-          parser.doctype += c
-          if (c === parser.q) {
-            parser.q = ''
-            parser.state = S.DOCTYPE
-          }
-          continue
-
-        case S.DOCTYPE_DTD:
-          parser.doctype += c
-          if (c === ']') {
-            parser.state = S.DOCTYPE
-          } else if (isQuote(c)) {
-            parser.state = S.DOCTYPE_DTD_QUOTED
-            parser.q = c
-          }
-          continue
-
-        case S.DOCTYPE_DTD_QUOTED:
-          parser.doctype += c
-          if (c === parser.q) {
-            parser.state = S.DOCTYPE_DTD
-            parser.q = ''
-          }
-          continue
-
-        case S.COMMENT:
-          if (c === '-') {
-            parser.state = S.COMMENT_ENDING
-          } else {
-            parser.comment += c
-          }
-          continue
-
-        case S.COMMENT_ENDING:
-          if (c === '-') {
-            parser.state = S.COMMENT_ENDED
-            parser.comment = textopts(parser.opt, parser.comment)
-            if (parser.comment) {
-              emitNode(parser, 'oncomment', parser.comment)
-            }
-            parser.comment = ''
-          } else {
-            parser.comment += '-' + c
-            parser.state = S.COMMENT
-          }
-          continue
-
-        case S.COMMENT_ENDED:
-          if (c !== '>') {
-            strictFail(parser, 'Malformed comment')
-            // allow <!-- blah -- bloo --> in non-strict mode,
-            // which is a comment of " blah -- bloo "
-            parser.comment += '--' + c
-            parser.state = S.COMMENT
-          } else {
-            parser.state = S.TEXT
-          }
-          continue
-
-        case S.CDATA:
-          if (c === ']') {
-            parser.state = S.CDATA_ENDING
-          } else {
-            parser.cdata += c
-          }
-          continue
-
-        case S.CDATA_ENDING:
-          if (c === ']') {
-            parser.state = S.CDATA_ENDING_2
-          } else {
-            parser.cdata += ']' + c
-            parser.state = S.CDATA
-          }
-          continue
-
-        case S.CDATA_ENDING_2:
-          if (c === '>') {
-            if (parser.cdata) {
-              emitNode(parser, 'oncdata', parser.cdata)
-            }
-            emitNode(parser, 'onclosecdata')
-            parser.cdata = ''
-            parser.state = S.TEXT
-          } else if (c === ']') {
-            parser.cdata += ']'
-          } else {
-            parser.cdata += ']]' + c
-            parser.state = S.CDATA
-          }
-          continue
-
-        case S.PROC_INST:
-          if (c === '?') {
-            parser.state = S.PROC_INST_ENDING
-          } else if (isWhitespace(c)) {
-            parser.state = S.PROC_INST_BODY
-          } else {
-            parser.procInstName += c
-          }
-          continue
-
-        case S.PROC_INST_BODY:
-          if (!parser.procInstBody && isWhitespace(c)) {
-            continue
-          } else if (c === '?') {
-            parser.state = S.PROC_INST_ENDING
-          } else {
-            parser.procInstBody += c
-          }
-          continue
-
-        case S.PROC_INST_ENDING:
-          if (c === '>') {
-            emitNode(parser, 'onprocessinginstruction', {
-              name: parser.procInstName,
-              body: parser.procInstBody
-            })
-            parser.procInstName = parser.procInstBody = ''
-            parser.state = S.TEXT
-          } else {
-            parser.procInstBody += '?' + c
-            parser.state = S.PROC_INST_BODY
-          }
-          continue
-
-        case S.OPEN_TAG:
-          if (isMatch(nameBody, c)) {
-            parser.tagName += c
-          } else {
-            newTag(parser)
-            if (c === '>') {
-              openTag(parser)
-            } else if (c === '/') {
-              parser.state = S.OPEN_TAG_SLASH
-            } else {
-              if (!isWhitespace(c)) {
-                strictFail(parser, 'Invalid character in tag name')
-              }
-              parser.state = S.ATTRIB
-            }
-          }
-          continue
-
-        case S.OPEN_TAG_SLASH:
-          if (c === '>') {
-            openTag(parser, true)
-            closeTag(parser)
-          } else {
-            strictFail(parser, 'Forward-slash in opening tag not followed by >')
-            parser.state = S.ATTRIB
-          }
-          continue
-
-        case S.ATTRIB:
-          // haven't read the attribute name yet.
-          if (isWhitespace(c)) {
-            continue
-          } else if (c === '>') {
-            openTag(parser)
-          } else if (c === '/') {
-            parser.state = S.OPEN_TAG_SLASH
-          } else if (isMatch(nameStart, c)) {
-            parser.attribName = c
-            parser.attribValue = ''
-            parser.state = S.ATTRIB_NAME
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_NAME:
-          if (c === '=') {
-            parser.state = S.ATTRIB_VALUE
-          } else if (c === '>') {
-            strictFail(parser, 'Attribute without value')
-            parser.attribValue = parser.attribName
-            attrib(parser)
-            openTag(parser)
-          } else if (isWhitespace(c)) {
-            parser.state = S.ATTRIB_NAME_SAW_WHITE
-          } else if (isMatch(nameBody, c)) {
-            parser.attribName += c
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_NAME_SAW_WHITE:
-          if (c === '=') {
-            parser.state = S.ATTRIB_VALUE
-          } else if (isWhitespace(c)) {
-            continue
-          } else {
-            strictFail(parser, 'Attribute without value')
-            parser.tag.attributes[parser.attribName] = ''
-            parser.attribValue = ''
-            emitNode(parser, 'onattribute', {
-              name: parser.attribName,
-              value: ''
-            })
-            parser.attribName = ''
-            if (c === '>') {
-              openTag(parser)
-            } else if (isMatch(nameStart, c)) {
-              parser.attribName = c
-              parser.state = S.ATTRIB_NAME
-            } else {
-              strictFail(parser, 'Invalid attribute name')
-              parser.state = S.ATTRIB
-            }
-          }
-          continue
-
-        case S.ATTRIB_VALUE:
-          if (isWhitespace(c)) {
-            continue
-          } else if (isQuote(c)) {
-            parser.q = c
-            parser.state = S.ATTRIB_VALUE_QUOTED
-          } else {
-            strictFail(parser, 'Unquoted attribute value')
-            parser.state = S.ATTRIB_VALUE_UNQUOTED
-            parser.attribValue = c
-          }
-          continue
-
-        case S.ATTRIB_VALUE_QUOTED:
-          if (c !== parser.q) {
-            if (c === '&') {
-              parser.state = S.ATTRIB_VALUE_ENTITY_Q
-            } else {
-              parser.attribValue += c
-            }
-            continue
-          }
-          attrib(parser)
-          parser.q = ''
-          parser.state = S.ATTRIB_VALUE_CLOSED
-          continue
-
-        case S.ATTRIB_VALUE_CLOSED:
-          if (isWhitespace(c)) {
-            parser.state = S.ATTRIB
-          } else if (c === '>') {
-            openTag(parser)
-          } else if (c === '/') {
-            parser.state = S.OPEN_TAG_SLASH
-          } else if (isMatch(nameStart, c)) {
-            strictFail(parser, 'No whitespace between attributes')
-            parser.attribName = c
-            parser.attribValue = ''
-            parser.state = S.ATTRIB_NAME
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_VALUE_UNQUOTED:
-          if (!isAttribEnd(c)) {
-            if (c === '&') {
-              parser.state = S.ATTRIB_VALUE_ENTITY_U
-            } else {
-              parser.attribValue += c
-            }
-            continue
-          }
-          attrib(parser)
-          if (c === '>') {
-            openTag(parser)
-          } else {
-            parser.state = S.ATTRIB
-          }
-          continue
-
-        case S.CLOSE_TAG:
-          if (!parser.tagName) {
-            if (isWhitespace(c)) {
-              continue
-            } else if (notMatch(nameStart, c)) {
-              if (parser.script) {
-                parser.script += '</' + c
-                parser.state = S.SCRIPT
-              } else {
-                strictFail(parser, 'Invalid tagname in closing tag.')
-              }
-            } else {
-              parser.tagName = c
-            }
-          } else if (c === '>') {
-            closeTag(parser)
-          } else if (isMatch(nameBody, c)) {
-            parser.tagName += c
-          } else if (parser.script) {
-            parser.script += '</' + parser.tagName
-            parser.tagName = ''
-            parser.state = S.SCRIPT
-          } else {
-            if (!isWhitespace(c)) {
-              strictFail(parser, 'Invalid tagname in closing tag')
-            }
-            parser.state = S.CLOSE_TAG_SAW_WHITE
-          }
-          continue
-
-        case S.CLOSE_TAG_SAW_WHITE:
-          if (isWhitespace(c)) {
-            continue
-          }
-          if (c === '>') {
-            closeTag(parser)
-          } else {
-            strictFail(parser, 'Invalid characters in closing tag')
-          }
-          continue
-
-        case S.TEXT_ENTITY:
-        case S.ATTRIB_VALUE_ENTITY_Q:
-        case S.ATTRIB_VALUE_ENTITY_U:
-          var returnState
-          var buffer
-          switch (parser.state) {
-            case S.TEXT_ENTITY:
-              returnState = S.TEXT
-              buffer = 'textNode'
-              break
-
-            case S.ATTRIB_VALUE_ENTITY_Q:
-              returnState = S.ATTRIB_VALUE_QUOTED
-              buffer = 'attribValue'
-              break
-
-            case S.ATTRIB_VALUE_ENTITY_U:
-              returnState = S.ATTRIB_VALUE_UNQUOTED
-              buffer = 'attribValue'
-              break
-          }
-
-          if (c === ';') {
-            parser[buffer] += parseEntity(parser)
-            parser.entity = ''
-            parser.state = returnState
-          } else if (isMatch(parser.entity.length ? entityBody : entityStart, c)) {
-            parser.entity += c
-          } else {
-            strictFail(parser, 'Invalid character in entity name')
-            parser[buffer] += '&' + parser.entity + c
-            parser.entity = ''
-            parser.state = returnState
-          }
-
-          continue
-
-        default:
-          throw new Error(parser, 'Unknown state: ' + parser.state)
-      }
-    } // while
-
-    if (parser.position >= parser.bufferCheckPosition) {
-      checkBufferLength(parser)
-    }
-    return parser
-  }
-
-  /*! http://mths.be/fromcodepoint v0.1.0 by @mathias */
-  /* istanbul ignore next */
-  if (!String.fromCodePoint) {
-    (function () {
-      var stringFromCharCode = String.fromCharCode
-      var floor = Math.floor
-      var fromCodePoint = function () {
-        var MAX_SIZE = 0x4000
-        var codeUnits = []
-        var highSurrogate
-        var lowSurrogate
-        var index = -1
-        var length = arguments.length
-        if (!length) {
-          return ''
-        }
-        var result = ''
-        while (++index < length) {
-          var codePoint = Number(arguments[index])
-          if (
-            !isFinite(codePoint) || // `NaN`, `+Infinity`, or `-Infinity`
-            codePoint < 0 || // not a valid Unicode code point
-            codePoint > 0x10FFFF || // not a valid Unicode code point
-            floor(codePoint) !== codePoint // not an integer
-          ) {
-            throw RangeError('Invalid code point: ' + codePoint)
-          }
-          if (codePoint <= 0xFFFF) { // BMP code point
-            codeUnits.push(codePoint)
-          } else { // Astral code point; split in surrogate halves
-            // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
-            codePoint -= 0x10000
-            highSurrogate = (codePoint >> 10) + 0xD800
-            lowSurrogate = (codePoint % 0x400) + 0xDC00
-            codeUnits.push(highSurrogate, lowSurrogate)
-          }
-          if (index + 1 === length || codeUnits.length > MAX_SIZE) {
-            result += stringFromCharCode.apply(null, codeUnits)
-            codeUnits.length = 0
-          }
-        }
-        return result
-      }
-      /* istanbul ignore next */
-      if (Object.defineProperty) {
-        Object.defineProperty(String, 'fromCodePoint', {
-          value: fromCodePoint,
-          configurable: true,
-          writable: true
-        })
-      } else {
-        String.fromCodePoint = fromCodePoint
-      }
-    }())
-  }
-})(typeof exports === 'undefined' ? this.sax = {} : exports)
-
-}).call(this)}).call(this,require("buffer").Buffer)
-},{"buffer":4,"stream":23,"string_decoder":58}],23:[function(require,module,exports){
+},{"truncate-utf8-bytes":90}],55:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -6258,7 +13475,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":6,"inherits":9,"readable-stream/lib/_stream_duplex.js":25,"readable-stream/lib/_stream_passthrough.js":26,"readable-stream/lib/_stream_readable.js":27,"readable-stream/lib/_stream_transform.js":28,"readable-stream/lib/_stream_writable.js":29,"readable-stream/lib/internal/streams/end-of-stream.js":33,"readable-stream/lib/internal/streams/pipeline.js":35}],24:[function(require,module,exports){
+},{"events":17,"inherits":29,"readable-stream/lib/_stream_duplex.js":57,"readable-stream/lib/_stream_passthrough.js":58,"readable-stream/lib/_stream_readable.js":59,"readable-stream/lib/_stream_transform.js":60,"readable-stream/lib/_stream_writable.js":61,"readable-stream/lib/internal/streams/end-of-stream.js":65,"readable-stream/lib/internal/streams/pipeline.js":67}],56:[function(require,module,exports){
 'use strict';
 
 function _inheritsLoose(subClass, superClass) { subClass.prototype = Object.create(superClass.prototype); subClass.prototype.constructor = subClass; subClass.__proto__ = superClass; }
@@ -6387,7 +13604,7 @@ createErrorType('ERR_UNKNOWN_ENCODING', function (arg) {
 createErrorType('ERR_STREAM_UNSHIFT_AFTER_END_EVENT', 'stream.unshift() after end event');
 module.exports.codes = codes;
 
-},{}],25:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 (function (process){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -6529,7 +13746,7 @@ Object.defineProperty(Duplex.prototype, 'destroyed', {
   }
 });
 }).call(this)}).call(this,require('_process'))
-},{"./_stream_readable":27,"./_stream_writable":29,"_process":16,"inherits":9}],26:[function(require,module,exports){
+},{"./_stream_readable":59,"./_stream_writable":61,"_process":48,"inherits":29}],58:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -6569,7 +13786,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":28,"inherits":9}],27:[function(require,module,exports){
+},{"./_stream_transform":60,"inherits":29}],59:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -7696,7 +14913,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":24,"./_stream_duplex":25,"./internal/streams/async_iterator":30,"./internal/streams/buffer_list":31,"./internal/streams/destroy":32,"./internal/streams/from":34,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"events":6,"inherits":9,"string_decoder/":58,"util":3}],28:[function(require,module,exports){
+},{"../errors":56,"./_stream_duplex":57,"./internal/streams/async_iterator":62,"./internal/streams/buffer_list":63,"./internal/streams/destroy":64,"./internal/streams/from":66,"./internal/streams/state":68,"./internal/streams/stream":69,"_process":48,"buffer":12,"events":17,"inherits":29,"string_decoder/":89,"util":8}],60:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -7898,7 +15115,7 @@ function done(stream, er, data) {
   if (stream._transformState.transforming) throw new ERR_TRANSFORM_ALREADY_TRANSFORMING();
   return stream.push(null);
 }
-},{"../errors":24,"./_stream_duplex":25,"inherits":9}],29:[function(require,module,exports){
+},{"../errors":56,"./_stream_duplex":57,"inherits":29}],61:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -8598,7 +15815,7 @@ Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":24,"./_stream_duplex":25,"./internal/streams/destroy":32,"./internal/streams/state":36,"./internal/streams/stream":37,"_process":16,"buffer":4,"inherits":9,"util-deprecate":62}],30:[function(require,module,exports){
+},{"../errors":56,"./_stream_duplex":57,"./internal/streams/destroy":64,"./internal/streams/state":68,"./internal/streams/stream":69,"_process":48,"buffer":12,"inherits":29,"util-deprecate":95}],62:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
@@ -8808,7 +16025,7 @@ var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterat
 
 module.exports = createReadableStreamAsyncIterator;
 }).call(this)}).call(this,require('_process'))
-},{"./end-of-stream":33,"_process":16}],31:[function(require,module,exports){
+},{"./end-of-stream":65,"_process":48}],63:[function(require,module,exports){
 'use strict';
 
 function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
@@ -9019,7 +16236,7 @@ function () {
 
   return BufferList;
 }();
-},{"buffer":4,"util":3}],32:[function(require,module,exports){
+},{"buffer":12,"util":8}],64:[function(require,module,exports){
 (function (process){(function (){
 'use strict'; // undocumented cb() API, needed for core, not for public API
 
@@ -9127,7 +16344,7 @@ module.exports = {
   errorOrDestroy: errorOrDestroy
 };
 }).call(this)}).call(this,require('_process'))
-},{"_process":16}],33:[function(require,module,exports){
+},{"_process":48}],65:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/end-of-stream with
 // permission from the author, Mathias Buus (@mafintosh).
 'use strict';
@@ -9232,12 +16449,12 @@ function eos(stream, opts, callback) {
 }
 
 module.exports = eos;
-},{"../../../errors":24}],34:[function(require,module,exports){
+},{"../../../errors":56}],66:[function(require,module,exports){
 module.exports = function () {
   throw new Error('Readable.from is not available in the browser')
 };
 
-},{}],35:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/pump with
 // permission from the author, Mathias Buus (@mafintosh).
 'use strict';
@@ -9335,7 +16552,7 @@ function pipeline() {
 }
 
 module.exports = pipeline;
-},{"../../../errors":24,"./end-of-stream":33}],36:[function(require,module,exports){
+},{"../../../errors":56,"./end-of-stream":65}],68:[function(require,module,exports){
 'use strict';
 
 var ERR_INVALID_OPT_VALUE = require('../../../errors').codes.ERR_INVALID_OPT_VALUE;
@@ -9363,10 +16580,10 @@ function getHighWaterMark(state, options, duplexKey, isDuplex) {
 module.exports = {
   getHighWaterMark: getHighWaterMark
 };
-},{"../../../errors":24}],37:[function(require,module,exports){
+},{"../../../errors":56}],69:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":6}],38:[function(require,module,exports){
+},{"events":17}],70:[function(require,module,exports){
 (function (global){(function (){
 var ClientRequest = require('./lib/request')
 var response = require('./lib/response')
@@ -9454,7 +16671,7 @@ http.METHODS = [
 	'UNSUBSCRIBE'
 ]
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./lib/request":40,"./lib/response":41,"builtin-status-codes":5,"url":60,"xtend":63}],39:[function(require,module,exports){
+},{"./lib/request":72,"./lib/response":73,"builtin-status-codes":13,"url":92,"xtend":100}],71:[function(require,module,exports){
 (function (global){(function (){
 exports.fetch = isFunction(global.fetch) && isFunction(global.ReadableStream)
 
@@ -9517,7 +16734,7 @@ function isFunction (value) {
 xhr = null // Help gc
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],40:[function(require,module,exports){
+},{}],72:[function(require,module,exports){
 (function (process,global,Buffer){(function (){
 var capability = require('./capability')
 var inherits = require('inherits')
@@ -9873,7 +17090,7 @@ var unsafeHeaders = [
 ]
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":39,"./response":41,"_process":16,"buffer":4,"inherits":9,"readable-stream":56}],41:[function(require,module,exports){
+},{"./capability":71,"./response":73,"_process":48,"buffer":12,"inherits":29,"readable-stream":88}],73:[function(require,module,exports){
 (function (process,global,Buffer){(function (){
 var capability = require('./capability')
 var inherits = require('inherits')
@@ -10088,35 +17305,35 @@ IncomingMessage.prototype._onXHRProgress = function (resetTimers) {
 }
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":39,"_process":16,"buffer":4,"inherits":9,"readable-stream":56}],42:[function(require,module,exports){
-arguments[4][24][0].apply(exports,arguments)
-},{"dup":24}],43:[function(require,module,exports){
-arguments[4][25][0].apply(exports,arguments)
-},{"./_stream_readable":45,"./_stream_writable":47,"_process":16,"dup":25,"inherits":9}],44:[function(require,module,exports){
-arguments[4][26][0].apply(exports,arguments)
-},{"./_stream_transform":46,"dup":26,"inherits":9}],45:[function(require,module,exports){
-arguments[4][27][0].apply(exports,arguments)
-},{"../errors":42,"./_stream_duplex":43,"./internal/streams/async_iterator":48,"./internal/streams/buffer_list":49,"./internal/streams/destroy":50,"./internal/streams/from":52,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":27,"events":6,"inherits":9,"string_decoder/":58,"util":3}],46:[function(require,module,exports){
-arguments[4][28][0].apply(exports,arguments)
-},{"../errors":42,"./_stream_duplex":43,"dup":28,"inherits":9}],47:[function(require,module,exports){
-arguments[4][29][0].apply(exports,arguments)
-},{"../errors":42,"./_stream_duplex":43,"./internal/streams/destroy":50,"./internal/streams/state":54,"./internal/streams/stream":55,"_process":16,"buffer":4,"dup":29,"inherits":9,"util-deprecate":62}],48:[function(require,module,exports){
-arguments[4][30][0].apply(exports,arguments)
-},{"./end-of-stream":51,"_process":16,"dup":30}],49:[function(require,module,exports){
-arguments[4][31][0].apply(exports,arguments)
-},{"buffer":4,"dup":31,"util":3}],50:[function(require,module,exports){
-arguments[4][32][0].apply(exports,arguments)
-},{"_process":16,"dup":32}],51:[function(require,module,exports){
-arguments[4][33][0].apply(exports,arguments)
-},{"../../../errors":42,"dup":33}],52:[function(require,module,exports){
-arguments[4][34][0].apply(exports,arguments)
-},{"dup":34}],53:[function(require,module,exports){
-arguments[4][35][0].apply(exports,arguments)
-},{"../../../errors":42,"./end-of-stream":51,"dup":35}],54:[function(require,module,exports){
-arguments[4][36][0].apply(exports,arguments)
-},{"../../../errors":42,"dup":36}],55:[function(require,module,exports){
-arguments[4][37][0].apply(exports,arguments)
-},{"dup":37,"events":6}],56:[function(require,module,exports){
+},{"./capability":71,"_process":48,"buffer":12,"inherits":29,"readable-stream":88}],74:[function(require,module,exports){
+arguments[4][56][0].apply(exports,arguments)
+},{"dup":56}],75:[function(require,module,exports){
+arguments[4][57][0].apply(exports,arguments)
+},{"./_stream_readable":77,"./_stream_writable":79,"_process":48,"dup":57,"inherits":29}],76:[function(require,module,exports){
+arguments[4][58][0].apply(exports,arguments)
+},{"./_stream_transform":78,"dup":58,"inherits":29}],77:[function(require,module,exports){
+arguments[4][59][0].apply(exports,arguments)
+},{"../errors":74,"./_stream_duplex":75,"./internal/streams/async_iterator":80,"./internal/streams/buffer_list":81,"./internal/streams/destroy":82,"./internal/streams/from":84,"./internal/streams/state":86,"./internal/streams/stream":87,"_process":48,"buffer":12,"dup":59,"events":17,"inherits":29,"string_decoder/":89,"util":8}],78:[function(require,module,exports){
+arguments[4][60][0].apply(exports,arguments)
+},{"../errors":74,"./_stream_duplex":75,"dup":60,"inherits":29}],79:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"../errors":74,"./_stream_duplex":75,"./internal/streams/destroy":82,"./internal/streams/state":86,"./internal/streams/stream":87,"_process":48,"buffer":12,"dup":61,"inherits":29,"util-deprecate":95}],80:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"./end-of-stream":83,"_process":48,"dup":62}],81:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"buffer":12,"dup":63,"util":8}],82:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"_process":48,"dup":64}],83:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"../../../errors":74,"dup":65}],84:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],85:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"../../../errors":74,"./end-of-stream":83,"dup":67}],86:[function(require,module,exports){
+arguments[4][68][0].apply(exports,arguments)
+},{"../../../errors":74,"dup":68}],87:[function(require,module,exports){
+arguments[4][69][0].apply(exports,arguments)
+},{"dup":69,"events":17}],88:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
@@ -10127,317 +17344,7 @@ exports.PassThrough = require('./lib/_stream_passthrough.js');
 exports.finished = require('./lib/internal/streams/end-of-stream.js');
 exports.pipeline = require('./lib/internal/streams/pipeline.js');
 
-},{"./lib/_stream_duplex.js":43,"./lib/_stream_passthrough.js":44,"./lib/_stream_readable.js":45,"./lib/_stream_transform.js":46,"./lib/_stream_writable.js":47,"./lib/internal/streams/end-of-stream.js":51,"./lib/internal/streams/pipeline.js":53}],57:[function(require,module,exports){
-/* global chrome location ReadableStream define MessageChannel TransformStream */
-
-;((name, definition) => {
-  typeof module !== 'undefined'
-    ? module.exports = definition()
-    : typeof define === 'function' && typeof define.amd === 'object'
-      ? define(definition)
-      : this[name] = definition()
-})('streamSaver', () => {
-  'use strict'
-
-  const global = typeof window === 'object' ? window : this
-  if (!global.HTMLElement) console.warn('streamsaver is meant to run on browsers main thread')
-
-  let mitmTransporter = null
-  let supportsTransferable = false
-  const test = fn => { try { fn() } catch (e) {} }
-  const ponyfill = global.WebStreamsPolyfill || {}
-  const isSecureContext = global.isSecureContext
-  // TODO: Must come up with a real detection test (#69)
-  let useBlobFallback = /constructor/i.test(global.HTMLElement) || !!global.safari || !!global.WebKitPoint
-  const downloadStrategy = isSecureContext || 'MozAppearance' in document.documentElement.style
-    ? 'iframe'
-    : 'navigate'
-
-  const streamSaver = {
-    createWriteStream,
-    WritableStream: global.WritableStream || ponyfill.WritableStream,
-    supported: true,
-    version: { full: '2.0.5', major: 2, minor: 0, dot: 5 },
-    mitm: 'https://jimmywarting.github.io/StreamSaver.js/mitm.html?version=2.0.0'
-  }
-
-  /**
-   * create a hidden iframe and append it to the DOM (body)
-   *
-   * @param  {string} src page to load
-   * @return {HTMLIFrameElement} page to load
-   */
-  function makeIframe (src) {
-    if (!src) throw new Error('meh')
-    const iframe = document.createElement('iframe')
-    iframe.hidden = true
-    iframe.src = src
-    iframe.loaded = false
-    iframe.name = 'iframe'
-    iframe.isIframe = true
-    iframe.postMessage = (...args) => iframe.contentWindow.postMessage(...args)
-    iframe.addEventListener('load', () => {
-      iframe.loaded = true
-    }, { once: true })
-    document.body.appendChild(iframe)
-    return iframe
-  }
-
-  /**
-   * create a popup that simulates the basic things
-   * of what a iframe can do
-   *
-   * @param  {string} src page to load
-   * @return {object}     iframe like object
-   */
-  function makePopup (src) {
-    const options = 'width=200,height=100'
-    const delegate = document.createDocumentFragment()
-    const popup = {
-      frame: global.open(src, 'popup', options),
-      loaded: false,
-      isIframe: false,
-      isPopup: true,
-      remove () { popup.frame.close() },
-      addEventListener (...args) { delegate.addEventListener(...args) },
-      dispatchEvent (...args) { delegate.dispatchEvent(...args) },
-      removeEventListener (...args) { delegate.removeEventListener(...args) },
-      postMessage (...args) { popup.frame.postMessage(...args) }
-    }
-
-    const onReady = evt => {
-      if (evt.source === popup.frame) {
-        popup.loaded = true
-        global.removeEventListener('message', onReady)
-        popup.dispatchEvent(new Event('load'))
-      }
-    }
-
-    global.addEventListener('message', onReady)
-
-    return popup
-  }
-
-  try {
-    // We can't look for service worker since it may still work on http
-    new Response(new ReadableStream())
-    if (isSecureContext && !('serviceWorker' in navigator)) {
-      useBlobFallback = true
-    }
-  } catch (err) {
-    useBlobFallback = true
-  }
-
-  test(() => {
-    // Transfariable stream was first enabled in chrome v73 behind a flag
-    const { readable } = new TransformStream()
-    const mc = new MessageChannel()
-    mc.port1.postMessage(readable, [readable])
-    mc.port1.close()
-    mc.port2.close()
-    supportsTransferable = true
-    // Freeze TransformStream object (can only work with native)
-    Object.defineProperty(streamSaver, 'TransformStream', {
-      configurable: false,
-      writable: false,
-      value: TransformStream
-    })
-  })
-
-  function loadTransporter () {
-    if (!mitmTransporter) {
-      mitmTransporter = isSecureContext
-        ? makeIframe(streamSaver.mitm)
-        : makePopup(streamSaver.mitm)
-    }
-  }
-
-  /**
-   * @param  {string} filename filename that should be used
-   * @param  {object} options  [description]
-   * @param  {number} size     depricated
-   * @return {WritableStream<Uint8Array>}
-   */
-  function createWriteStream (filename, options, size) {
-    let opts = {
-      size: null,
-      pathname: null,
-      writableStrategy: undefined,
-      readableStrategy: undefined
-    }
-
-    let bytesWritten = 0 // by StreamSaver.js (not the service worker)
-    let downloadUrl = null
-    let channel = null
-    let ts = null
-
-    // normalize arguments
-    if (Number.isFinite(options)) {
-      [ size, options ] = [ options, size ]
-      console.warn('[StreamSaver] Depricated pass an object as 2nd argument when creating a write stream')
-      opts.size = size
-      opts.writableStrategy = options
-    } else if (options && options.highWaterMark) {
-      console.warn('[StreamSaver] Depricated pass an object as 2nd argument when creating a write stream')
-      opts.size = size
-      opts.writableStrategy = options
-    } else {
-      opts = options || {}
-    }
-    if (!useBlobFallback) {
-      loadTransporter()
-
-      channel = new MessageChannel()
-
-      // Make filename RFC5987 compatible
-      filename = encodeURIComponent(filename.replace(/\//g, ':'))
-        .replace(/['()]/g, escape)
-        .replace(/\*/g, '%2A')
-
-      const response = {
-        transferringReadable: supportsTransferable,
-        pathname: opts.pathname || Math.random().toString().slice(-6) + '/' + filename,
-        headers: {
-          'Content-Type': 'application/octet-stream; charset=utf-8',
-          'Content-Disposition': "attachment; filename*=UTF-8''" + filename
-        }
-      }
-
-      if (opts.size) {
-        response.headers['Content-Length'] = opts.size
-      }
-
-      const args = [ response, '*', [ channel.port2 ] ]
-
-      if (supportsTransferable) {
-        const transformer = downloadStrategy === 'iframe' ? undefined : {
-          // This transformer & flush method is only used by insecure context.
-          transform (chunk, controller) {
-            if (!(chunk instanceof Uint8Array)) {
-              throw new TypeError('Can only wirte Uint8Arrays')
-            }
-            bytesWritten += chunk.length
-            controller.enqueue(chunk)
-
-            if (downloadUrl) {
-              location.href = downloadUrl
-              downloadUrl = null
-            }
-          },
-          flush () {
-            if (downloadUrl) {
-              location.href = downloadUrl
-            }
-          }
-        }
-        ts = new streamSaver.TransformStream(
-          transformer,
-          opts.writableStrategy,
-          opts.readableStrategy
-        )
-        const readableStream = ts.readable
-
-        channel.port1.postMessage({ readableStream }, [ readableStream ])
-      }
-
-      channel.port1.onmessage = evt => {
-        // Service worker sent us a link that we should open.
-        if (evt.data.download) {
-          // Special treatment for popup...
-          if (downloadStrategy === 'navigate') {
-            mitmTransporter.remove()
-            mitmTransporter = null
-            if (bytesWritten) {
-              location.href = evt.data.download
-            } else {
-              downloadUrl = evt.data.download
-            }
-          } else {
-            if (mitmTransporter.isPopup) {
-              mitmTransporter.remove()
-              mitmTransporter = null
-              // Special case for firefox, they can keep sw alive with fetch
-              if (downloadStrategy === 'iframe') {
-                makeIframe(streamSaver.mitm)
-              }
-            }
-
-            // We never remove this iframes b/c it can interrupt saving
-            makeIframe(evt.data.download)
-          }
-        }
-      }
-
-      if (mitmTransporter.loaded) {
-        mitmTransporter.postMessage(...args)
-      } else {
-        mitmTransporter.addEventListener('load', () => {
-          mitmTransporter.postMessage(...args)
-        }, { once: true })
-      }
-    }
-
-    let chunks = []
-
-    return (!useBlobFallback && ts && ts.writable) || new streamSaver.WritableStream({
-      write (chunk) {
-        if (!(chunk instanceof Uint8Array)) {
-          throw new TypeError('Can only wirte Uint8Arrays')
-        }
-        if (useBlobFallback) {
-          // Safari... The new IE6
-          // https://github.com/jimmywarting/StreamSaver.js/issues/69
-          //
-          // even doe it has everything it fails to download anything
-          // that comes from the service worker..!
-          chunks.push(chunk)
-          return
-        }
-
-        // is called when a new chunk of data is ready to be written
-        // to the underlying sink. It can return a promise to signal
-        // success or failure of the write operation. The stream
-        // implementation guarantees that this method will be called
-        // only after previous writes have succeeded, and never after
-        // close or abort is called.
-
-        // TODO: Kind of important that service worker respond back when
-        // it has been written. Otherwise we can't handle backpressure
-        // EDIT: Transfarable streams solvs this...
-        channel.port1.postMessage(chunk)
-        bytesWritten += chunk.length
-
-        if (downloadUrl) {
-          location.href = downloadUrl
-          downloadUrl = null
-        }
-      },
-      close () {
-        if (useBlobFallback) {
-          const blob = new Blob(chunks, { type: 'application/octet-stream; charset=utf-8' })
-          const link = document.createElement('a')
-          link.href = URL.createObjectURL(blob)
-          link.download = filename
-          link.click()
-        } else {
-          channel.port1.postMessage('end')
-        }
-      },
-      abort () {
-        chunks = []
-        channel.port1.postMessage('abort')
-        channel.port1.onmessage = null
-        channel.port1.close()
-        channel.port2.close()
-        channel = null
-      }
-    }, opts.writableStrategy)
-  }
-
-  return streamSaver
-})
-
-},{}],58:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":75,"./lib/_stream_passthrough.js":76,"./lib/_stream_readable.js":77,"./lib/_stream_transform.js":78,"./lib/_stream_writable.js":79,"./lib/internal/streams/end-of-stream.js":83,"./lib/internal/streams/pipeline.js":85}],89:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10734,86 +17641,59 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":21}],59:[function(require,module,exports){
-(function (setImmediate,clearImmediate){(function (){
-var nextTick = require('process/browser.js').nextTick;
-var apply = Function.prototype.apply;
-var slice = Array.prototype.slice;
-var immediateIds = {};
-var nextImmediateId = 0;
+},{"safe-buffer":53}],90:[function(require,module,exports){
+'use strict';
 
-// DOM APIs, for completeness
+var truncate = require("./lib/truncate");
+var getLength = require("utf8-byte-length/browser");
+module.exports = truncate.bind(null, getLength);
 
-exports.setTimeout = function() {
-  return new Timeout(apply.call(setTimeout, window, arguments), clearTimeout);
-};
-exports.setInterval = function() {
-  return new Timeout(apply.call(setInterval, window, arguments), clearInterval);
-};
-exports.clearTimeout =
-exports.clearInterval = function(timeout) { timeout.close(); };
+},{"./lib/truncate":91,"utf8-byte-length/browser":94}],91:[function(require,module,exports){
+'use strict';
 
-function Timeout(id, clearFn) {
-  this._id = id;
-  this._clearFn = clearFn;
+function isHighSurrogate(codePoint) {
+  return codePoint >= 0xd800 && codePoint <= 0xdbff;
 }
-Timeout.prototype.unref = Timeout.prototype.ref = function() {};
-Timeout.prototype.close = function() {
-  this._clearFn.call(window, this._id);
-};
 
-// Does not start the time, just sets up the members needed.
-exports.enroll = function(item, msecs) {
-  clearTimeout(item._idleTimeoutId);
-  item._idleTimeout = msecs;
-};
+function isLowSurrogate(codePoint) {
+  return codePoint >= 0xdc00 && codePoint <= 0xdfff;
+}
 
-exports.unenroll = function(item) {
-  clearTimeout(item._idleTimeoutId);
-  item._idleTimeout = -1;
-};
-
-exports._unrefActive = exports.active = function(item) {
-  clearTimeout(item._idleTimeoutId);
-
-  var msecs = item._idleTimeout;
-  if (msecs >= 0) {
-    item._idleTimeoutId = setTimeout(function onTimeout() {
-      if (item._onTimeout)
-        item._onTimeout();
-    }, msecs);
+// Truncate string by size in bytes
+module.exports = function truncate(getLength, string, byteLength) {
+  if (typeof string !== "string") {
+    throw new Error("Input must be string");
   }
-};
 
-// That's not how node.js implements it but the exposed api is the same.
-exports.setImmediate = typeof setImmediate === "function" ? setImmediate : function(fn) {
-  var id = nextImmediateId++;
-  var args = arguments.length < 2 ? false : slice.call(arguments, 1);
+  var charLength = string.length;
+  var curByteLength = 0;
+  var codePoint;
+  var segment;
 
-  immediateIds[id] = true;
+  for (var i = 0; i < charLength; i += 1) {
+    codePoint = string.charCodeAt(i);
+    segment = string[i];
 
-  nextTick(function onNextTick() {
-    if (immediateIds[id]) {
-      // fn.call() is faster so we optimize for the common use-case
-      // @see http://jsperf.com/call-apply-segu
-      if (args) {
-        fn.apply(null, args);
-      } else {
-        fn.call(null);
-      }
-      // Prevent ids from leaking
-      exports.clearImmediate(id);
+    if (isHighSurrogate(codePoint) && isLowSurrogate(string.charCodeAt(i + 1))) {
+      i += 1;
+      segment += string[i];
     }
-  });
 
-  return id;
+    curByteLength += getLength(segment);
+
+    if (curByteLength === byteLength) {
+      return string.slice(0, i + 1);
+    }
+    else if (curByteLength > byteLength) {
+      return string.slice(0, i - segment.length + 1);
+    }
+  }
+
+  return string;
 };
 
-exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate : function(id) {
-  delete immediateIds[id];
-};
-}).call(this)}).call(this,require("timers").setImmediate,require("timers").clearImmediate)
-},{"process/browser.js":16,"timers":59}],60:[function(require,module,exports){
+
+},{}],92:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -11547,7 +18427,7 @@ Url.prototype.parseHost = function() {
   if (host) this.hostname = host;
 };
 
-},{"./util":61,"punycode":17,"querystring":20}],61:[function(require,module,exports){
+},{"./util":93,"punycode":49,"querystring":52}],93:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -11565,7 +18445,56 @@ module.exports = {
   }
 };
 
-},{}],62:[function(require,module,exports){
+},{}],94:[function(require,module,exports){
+'use strict';
+
+function isHighSurrogate(codePoint) {
+  return codePoint >= 0xd800 && codePoint <= 0xdbff;
+}
+
+function isLowSurrogate(codePoint) {
+  return codePoint >= 0xdc00 && codePoint <= 0xdfff;
+}
+
+// Truncate string by size in bytes
+module.exports = function getByteLength(string) {
+  if (typeof string !== "string") {
+    throw new Error("Input must be string");
+  }
+
+  var charLength = string.length;
+  var byteLength = 0;
+  var codePoint = null;
+  var prevCodePoint = null;
+  for (var i = 0; i < charLength; i++) {
+    codePoint = string.charCodeAt(i);
+    // handle 4-byte non-BMP chars
+    // low surrogate
+    if (isLowSurrogate(codePoint)) {
+      // when parsing previous hi-surrogate, 3 is added to byteLength
+      if (prevCodePoint != null && isHighSurrogate(prevCodePoint)) {
+        byteLength += 1;
+      }
+      else {
+        byteLength += 3;
+      }
+    }
+    else if (codePoint <= 0x7f ) {
+      byteLength += 1;
+    }
+    else if (codePoint >= 0x80 && codePoint <= 0x7ff) {
+      byteLength += 2;
+    }
+    else if (codePoint >= 0x800 && codePoint <= 0xffff) {
+      byteLength += 3;
+    }
+    prevCodePoint = codePoint;
+  }
+
+  return byteLength;
+};
+
+},{}],95:[function(require,module,exports){
 (function (global){(function (){
 
 /**
@@ -11636,7 +18565,1123 @@ function config (name) {
 }
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],63:[function(require,module,exports){
+},{}],96:[function(require,module,exports){
+arguments[4][4][0].apply(exports,arguments)
+},{"dup":4}],97:[function(require,module,exports){
+// Currently in sync with Node.js lib/internal/util/types.js
+// https://github.com/nodejs/node/commit/112cc7c27551254aa2b17098fb774867f05ed0d9
+
+'use strict';
+
+var isArgumentsObject = require('is-arguments');
+var isGeneratorFunction = require('is-generator-function');
+var whichTypedArray = require('which-typed-array');
+var isTypedArray = require('is-typed-array');
+
+function uncurryThis(f) {
+  return f.call.bind(f);
+}
+
+var BigIntSupported = typeof BigInt !== 'undefined';
+var SymbolSupported = typeof Symbol !== 'undefined';
+
+var ObjectToString = uncurryThis(Object.prototype.toString);
+
+var numberValue = uncurryThis(Number.prototype.valueOf);
+var stringValue = uncurryThis(String.prototype.valueOf);
+var booleanValue = uncurryThis(Boolean.prototype.valueOf);
+
+if (BigIntSupported) {
+  var bigIntValue = uncurryThis(BigInt.prototype.valueOf);
+}
+
+if (SymbolSupported) {
+  var symbolValue = uncurryThis(Symbol.prototype.valueOf);
+}
+
+function checkBoxedPrimitive(value, prototypeValueOf) {
+  if (typeof value !== 'object') {
+    return false;
+  }
+  try {
+    prototypeValueOf(value);
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+exports.isArgumentsObject = isArgumentsObject;
+exports.isGeneratorFunction = isGeneratorFunction;
+exports.isTypedArray = isTypedArray;
+
+// Taken from here and modified for better browser support
+// https://github.com/sindresorhus/p-is-promise/blob/cda35a513bda03f977ad5cde3a079d237e82d7ef/index.js
+function isPromise(input) {
+	return (
+		(
+			typeof Promise !== 'undefined' &&
+			input instanceof Promise
+		) ||
+		(
+			input !== null &&
+			typeof input === 'object' &&
+			typeof input.then === 'function' &&
+			typeof input.catch === 'function'
+		)
+	);
+}
+exports.isPromise = isPromise;
+
+function isArrayBufferView(value) {
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView) {
+    return ArrayBuffer.isView(value);
+  }
+
+  return (
+    isTypedArray(value) ||
+    isDataView(value)
+  );
+}
+exports.isArrayBufferView = isArrayBufferView;
+
+
+function isUint8Array(value) {
+  return whichTypedArray(value) === 'Uint8Array';
+}
+exports.isUint8Array = isUint8Array;
+
+function isUint8ClampedArray(value) {
+  return whichTypedArray(value) === 'Uint8ClampedArray';
+}
+exports.isUint8ClampedArray = isUint8ClampedArray;
+
+function isUint16Array(value) {
+  return whichTypedArray(value) === 'Uint16Array';
+}
+exports.isUint16Array = isUint16Array;
+
+function isUint32Array(value) {
+  return whichTypedArray(value) === 'Uint32Array';
+}
+exports.isUint32Array = isUint32Array;
+
+function isInt8Array(value) {
+  return whichTypedArray(value) === 'Int8Array';
+}
+exports.isInt8Array = isInt8Array;
+
+function isInt16Array(value) {
+  return whichTypedArray(value) === 'Int16Array';
+}
+exports.isInt16Array = isInt16Array;
+
+function isInt32Array(value) {
+  return whichTypedArray(value) === 'Int32Array';
+}
+exports.isInt32Array = isInt32Array;
+
+function isFloat32Array(value) {
+  return whichTypedArray(value) === 'Float32Array';
+}
+exports.isFloat32Array = isFloat32Array;
+
+function isFloat64Array(value) {
+  return whichTypedArray(value) === 'Float64Array';
+}
+exports.isFloat64Array = isFloat64Array;
+
+function isBigInt64Array(value) {
+  return whichTypedArray(value) === 'BigInt64Array';
+}
+exports.isBigInt64Array = isBigInt64Array;
+
+function isBigUint64Array(value) {
+  return whichTypedArray(value) === 'BigUint64Array';
+}
+exports.isBigUint64Array = isBigUint64Array;
+
+function isMapToString(value) {
+  return ObjectToString(value) === '[object Map]';
+}
+isMapToString.working = (
+  typeof Map !== 'undefined' &&
+  isMapToString(new Map())
+);
+
+function isMap(value) {
+  if (typeof Map === 'undefined') {
+    return false;
+  }
+
+  return isMapToString.working
+    ? isMapToString(value)
+    : value instanceof Map;
+}
+exports.isMap = isMap;
+
+function isSetToString(value) {
+  return ObjectToString(value) === '[object Set]';
+}
+isSetToString.working = (
+  typeof Set !== 'undefined' &&
+  isSetToString(new Set())
+);
+function isSet(value) {
+  if (typeof Set === 'undefined') {
+    return false;
+  }
+
+  return isSetToString.working
+    ? isSetToString(value)
+    : value instanceof Set;
+}
+exports.isSet = isSet;
+
+function isWeakMapToString(value) {
+  return ObjectToString(value) === '[object WeakMap]';
+}
+isWeakMapToString.working = (
+  typeof WeakMap !== 'undefined' &&
+  isWeakMapToString(new WeakMap())
+);
+function isWeakMap(value) {
+  if (typeof WeakMap === 'undefined') {
+    return false;
+  }
+
+  return isWeakMapToString.working
+    ? isWeakMapToString(value)
+    : value instanceof WeakMap;
+}
+exports.isWeakMap = isWeakMap;
+
+function isWeakSetToString(value) {
+  return ObjectToString(value) === '[object WeakSet]';
+}
+isWeakSetToString.working = (
+  typeof WeakSet !== 'undefined' &&
+  isWeakSetToString(new WeakSet())
+);
+function isWeakSet(value) {
+  return isWeakSetToString(value);
+}
+exports.isWeakSet = isWeakSet;
+
+function isArrayBufferToString(value) {
+  return ObjectToString(value) === '[object ArrayBuffer]';
+}
+isArrayBufferToString.working = (
+  typeof ArrayBuffer !== 'undefined' &&
+  isArrayBufferToString(new ArrayBuffer())
+);
+function isArrayBuffer(value) {
+  if (typeof ArrayBuffer === 'undefined') {
+    return false;
+  }
+
+  return isArrayBufferToString.working
+    ? isArrayBufferToString(value)
+    : value instanceof ArrayBuffer;
+}
+exports.isArrayBuffer = isArrayBuffer;
+
+function isDataViewToString(value) {
+  return ObjectToString(value) === '[object DataView]';
+}
+isDataViewToString.working = (
+  typeof ArrayBuffer !== 'undefined' &&
+  typeof DataView !== 'undefined' &&
+  isDataViewToString(new DataView(new ArrayBuffer(1), 0, 1))
+);
+function isDataView(value) {
+  if (typeof DataView === 'undefined') {
+    return false;
+  }
+
+  return isDataViewToString.working
+    ? isDataViewToString(value)
+    : value instanceof DataView;
+}
+exports.isDataView = isDataView;
+
+// Store a copy of SharedArrayBuffer in case it's deleted elsewhere
+var SharedArrayBufferCopy = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : undefined;
+function isSharedArrayBufferToString(value) {
+  return ObjectToString(value) === '[object SharedArrayBuffer]';
+}
+function isSharedArrayBuffer(value) {
+  if (typeof SharedArrayBufferCopy === 'undefined') {
+    return false;
+  }
+
+  if (typeof isSharedArrayBufferToString.working === 'undefined') {
+    isSharedArrayBufferToString.working = isSharedArrayBufferToString(new SharedArrayBufferCopy());
+  }
+
+  return isSharedArrayBufferToString.working
+    ? isSharedArrayBufferToString(value)
+    : value instanceof SharedArrayBufferCopy;
+}
+exports.isSharedArrayBuffer = isSharedArrayBuffer;
+
+function isAsyncFunction(value) {
+  return ObjectToString(value) === '[object AsyncFunction]';
+}
+exports.isAsyncFunction = isAsyncFunction;
+
+function isMapIterator(value) {
+  return ObjectToString(value) === '[object Map Iterator]';
+}
+exports.isMapIterator = isMapIterator;
+
+function isSetIterator(value) {
+  return ObjectToString(value) === '[object Set Iterator]';
+}
+exports.isSetIterator = isSetIterator;
+
+function isGeneratorObject(value) {
+  return ObjectToString(value) === '[object Generator]';
+}
+exports.isGeneratorObject = isGeneratorObject;
+
+function isWebAssemblyCompiledModule(value) {
+  return ObjectToString(value) === '[object WebAssembly.Module]';
+}
+exports.isWebAssemblyCompiledModule = isWebAssemblyCompiledModule;
+
+function isNumberObject(value) {
+  return checkBoxedPrimitive(value, numberValue);
+}
+exports.isNumberObject = isNumberObject;
+
+function isStringObject(value) {
+  return checkBoxedPrimitive(value, stringValue);
+}
+exports.isStringObject = isStringObject;
+
+function isBooleanObject(value) {
+  return checkBoxedPrimitive(value, booleanValue);
+}
+exports.isBooleanObject = isBooleanObject;
+
+function isBigIntObject(value) {
+  return BigIntSupported && checkBoxedPrimitive(value, bigIntValue);
+}
+exports.isBigIntObject = isBigIntObject;
+
+function isSymbolObject(value) {
+  return SymbolSupported && checkBoxedPrimitive(value, symbolValue);
+}
+exports.isSymbolObject = isSymbolObject;
+
+function isBoxedPrimitive(value) {
+  return (
+    isNumberObject(value) ||
+    isStringObject(value) ||
+    isBooleanObject(value) ||
+    isBigIntObject(value) ||
+    isSymbolObject(value)
+  );
+}
+exports.isBoxedPrimitive = isBoxedPrimitive;
+
+function isAnyArrayBuffer(value) {
+  return typeof Uint8Array !== 'undefined' && (
+    isArrayBuffer(value) ||
+    isSharedArrayBuffer(value)
+  );
+}
+exports.isAnyArrayBuffer = isAnyArrayBuffer;
+
+['isProxy', 'isExternal', 'isModuleNamespaceObject'].forEach(function(method) {
+  Object.defineProperty(exports, method, {
+    enumerable: false,
+    value: function() {
+      throw new Error(method + ' is not supported in userland');
+    }
+  });
+});
+
+},{"is-arguments":30,"is-generator-function":31,"is-typed-array":32,"which-typed-array":99}],98:[function(require,module,exports){
+(function (process){(function (){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+var getOwnPropertyDescriptors = Object.getOwnPropertyDescriptors ||
+  function getOwnPropertyDescriptors(obj) {
+    var keys = Object.keys(obj);
+    var descriptors = {};
+    for (var i = 0; i < keys.length; i++) {
+      descriptors[keys[i]] = Object.getOwnPropertyDescriptor(obj, keys[i]);
+    }
+    return descriptors;
+  };
+
+var formatRegExp = /%[sdj%]/g;
+exports.format = function(f) {
+  if (!isString(f)) {
+    var objects = [];
+    for (var i = 0; i < arguments.length; i++) {
+      objects.push(inspect(arguments[i]));
+    }
+    return objects.join(' ');
+  }
+
+  var i = 1;
+  var args = arguments;
+  var len = args.length;
+  var str = String(f).replace(formatRegExp, function(x) {
+    if (x === '%%') return '%';
+    if (i >= len) return x;
+    switch (x) {
+      case '%s': return String(args[i++]);
+      case '%d': return Number(args[i++]);
+      case '%j':
+        try {
+          return JSON.stringify(args[i++]);
+        } catch (_) {
+          return '[Circular]';
+        }
+      default:
+        return x;
+    }
+  });
+  for (var x = args[i]; i < len; x = args[++i]) {
+    if (isNull(x) || !isObject(x)) {
+      str += ' ' + x;
+    } else {
+      str += ' ' + inspect(x);
+    }
+  }
+  return str;
+};
+
+
+// Mark that a method should not be used.
+// Returns a modified function which warns once by default.
+// If --no-deprecation is set, then it is a no-op.
+exports.deprecate = function(fn, msg) {
+  if (typeof process !== 'undefined' && process.noDeprecation === true) {
+    return fn;
+  }
+
+  // Allow for deprecating things in the process of starting up.
+  if (typeof process === 'undefined') {
+    return function() {
+      return exports.deprecate(fn, msg).apply(this, arguments);
+    };
+  }
+
+  var warned = false;
+  function deprecated() {
+    if (!warned) {
+      if (process.throwDeprecation) {
+        throw new Error(msg);
+      } else if (process.traceDeprecation) {
+        console.trace(msg);
+      } else {
+        console.error(msg);
+      }
+      warned = true;
+    }
+    return fn.apply(this, arguments);
+  }
+
+  return deprecated;
+};
+
+
+var debugs = {};
+var debugEnvRegex = /^$/;
+
+if (process.env.NODE_DEBUG) {
+  var debugEnv = process.env.NODE_DEBUG;
+  debugEnv = debugEnv.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/,/g, '$|^')
+    .toUpperCase();
+  debugEnvRegex = new RegExp('^' + debugEnv + '$', 'i');
+}
+exports.debuglog = function(set) {
+  set = set.toUpperCase();
+  if (!debugs[set]) {
+    if (debugEnvRegex.test(set)) {
+      var pid = process.pid;
+      debugs[set] = function() {
+        var msg = exports.format.apply(exports, arguments);
+        console.error('%s %d: %s', set, pid, msg);
+      };
+    } else {
+      debugs[set] = function() {};
+    }
+  }
+  return debugs[set];
+};
+
+
+/**
+ * Echos the value of a value. Trys to print the value out
+ * in the best way possible given the different types.
+ *
+ * @param {Object} obj The object to print out.
+ * @param {Object} opts Optional options object that alters the output.
+ */
+/* legacy: obj, showHidden, depth, colors*/
+function inspect(obj, opts) {
+  // default options
+  var ctx = {
+    seen: [],
+    stylize: stylizeNoColor
+  };
+  // legacy...
+  if (arguments.length >= 3) ctx.depth = arguments[2];
+  if (arguments.length >= 4) ctx.colors = arguments[3];
+  if (isBoolean(opts)) {
+    // legacy...
+    ctx.showHidden = opts;
+  } else if (opts) {
+    // got an "options" object
+    exports._extend(ctx, opts);
+  }
+  // set default options
+  if (isUndefined(ctx.showHidden)) ctx.showHidden = false;
+  if (isUndefined(ctx.depth)) ctx.depth = 2;
+  if (isUndefined(ctx.colors)) ctx.colors = false;
+  if (isUndefined(ctx.customInspect)) ctx.customInspect = true;
+  if (ctx.colors) ctx.stylize = stylizeWithColor;
+  return formatValue(ctx, obj, ctx.depth);
+}
+exports.inspect = inspect;
+
+
+// http://en.wikipedia.org/wiki/ANSI_escape_code#graphics
+inspect.colors = {
+  'bold' : [1, 22],
+  'italic' : [3, 23],
+  'underline' : [4, 24],
+  'inverse' : [7, 27],
+  'white' : [37, 39],
+  'grey' : [90, 39],
+  'black' : [30, 39],
+  'blue' : [34, 39],
+  'cyan' : [36, 39],
+  'green' : [32, 39],
+  'magenta' : [35, 39],
+  'red' : [31, 39],
+  'yellow' : [33, 39]
+};
+
+// Don't use 'blue' not visible on cmd.exe
+inspect.styles = {
+  'special': 'cyan',
+  'number': 'yellow',
+  'boolean': 'yellow',
+  'undefined': 'grey',
+  'null': 'bold',
+  'string': 'green',
+  'date': 'magenta',
+  // "name": intentionally not styling
+  'regexp': 'red'
+};
+
+
+function stylizeWithColor(str, styleType) {
+  var style = inspect.styles[styleType];
+
+  if (style) {
+    return '\u001b[' + inspect.colors[style][0] + 'm' + str +
+           '\u001b[' + inspect.colors[style][1] + 'm';
+  } else {
+    return str;
+  }
+}
+
+
+function stylizeNoColor(str, styleType) {
+  return str;
+}
+
+
+function arrayToHash(array) {
+  var hash = {};
+
+  array.forEach(function(val, idx) {
+    hash[val] = true;
+  });
+
+  return hash;
+}
+
+
+function formatValue(ctx, value, recurseTimes) {
+  // Provide a hook for user-specified inspect functions.
+  // Check that value is an object with an inspect function on it
+  if (ctx.customInspect &&
+      value &&
+      isFunction(value.inspect) &&
+      // Filter out the util module, it's inspect function is special
+      value.inspect !== exports.inspect &&
+      // Also filter out any prototype objects using the circular check.
+      !(value.constructor && value.constructor.prototype === value)) {
+    var ret = value.inspect(recurseTimes, ctx);
+    if (!isString(ret)) {
+      ret = formatValue(ctx, ret, recurseTimes);
+    }
+    return ret;
+  }
+
+  // Primitive types cannot have properties
+  var primitive = formatPrimitive(ctx, value);
+  if (primitive) {
+    return primitive;
+  }
+
+  // Look up the keys of the object.
+  var keys = Object.keys(value);
+  var visibleKeys = arrayToHash(keys);
+
+  if (ctx.showHidden) {
+    keys = Object.getOwnPropertyNames(value);
+  }
+
+  // IE doesn't make error fields non-enumerable
+  // http://msdn.microsoft.com/en-us/library/ie/dww52sbt(v=vs.94).aspx
+  if (isError(value)
+      && (keys.indexOf('message') >= 0 || keys.indexOf('description') >= 0)) {
+    return formatError(value);
+  }
+
+  // Some type of object without properties can be shortcutted.
+  if (keys.length === 0) {
+    if (isFunction(value)) {
+      var name = value.name ? ': ' + value.name : '';
+      return ctx.stylize('[Function' + name + ']', 'special');
+    }
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    }
+    if (isDate(value)) {
+      return ctx.stylize(Date.prototype.toString.call(value), 'date');
+    }
+    if (isError(value)) {
+      return formatError(value);
+    }
+  }
+
+  var base = '', array = false, braces = ['{', '}'];
+
+  // Make Array say that they are Array
+  if (isArray(value)) {
+    array = true;
+    braces = ['[', ']'];
+  }
+
+  // Make functions say that they are functions
+  if (isFunction(value)) {
+    var n = value.name ? ': ' + value.name : '';
+    base = ' [Function' + n + ']';
+  }
+
+  // Make RegExps say that they are RegExps
+  if (isRegExp(value)) {
+    base = ' ' + RegExp.prototype.toString.call(value);
+  }
+
+  // Make dates with properties first say the date
+  if (isDate(value)) {
+    base = ' ' + Date.prototype.toUTCString.call(value);
+  }
+
+  // Make error with message first say the error
+  if (isError(value)) {
+    base = ' ' + formatError(value);
+  }
+
+  if (keys.length === 0 && (!array || value.length == 0)) {
+    return braces[0] + base + braces[1];
+  }
+
+  if (recurseTimes < 0) {
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    } else {
+      return ctx.stylize('[Object]', 'special');
+    }
+  }
+
+  ctx.seen.push(value);
+
+  var output;
+  if (array) {
+    output = formatArray(ctx, value, recurseTimes, visibleKeys, keys);
+  } else {
+    output = keys.map(function(key) {
+      return formatProperty(ctx, value, recurseTimes, visibleKeys, key, array);
+    });
+  }
+
+  ctx.seen.pop();
+
+  return reduceToSingleString(output, base, braces);
+}
+
+
+function formatPrimitive(ctx, value) {
+  if (isUndefined(value))
+    return ctx.stylize('undefined', 'undefined');
+  if (isString(value)) {
+    var simple = '\'' + JSON.stringify(value).replace(/^"|"$/g, '')
+                                             .replace(/'/g, "\\'")
+                                             .replace(/\\"/g, '"') + '\'';
+    return ctx.stylize(simple, 'string');
+  }
+  if (isNumber(value))
+    return ctx.stylize('' + value, 'number');
+  if (isBoolean(value))
+    return ctx.stylize('' + value, 'boolean');
+  // For some reason typeof null is "object", so special case here.
+  if (isNull(value))
+    return ctx.stylize('null', 'null');
+}
+
+
+function formatError(value) {
+  return '[' + Error.prototype.toString.call(value) + ']';
+}
+
+
+function formatArray(ctx, value, recurseTimes, visibleKeys, keys) {
+  var output = [];
+  for (var i = 0, l = value.length; i < l; ++i) {
+    if (hasOwnProperty(value, String(i))) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          String(i), true));
+    } else {
+      output.push('');
+    }
+  }
+  keys.forEach(function(key) {
+    if (!key.match(/^\d+$/)) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          key, true));
+    }
+  });
+  return output;
+}
+
+
+function formatProperty(ctx, value, recurseTimes, visibleKeys, key, array) {
+  var name, str, desc;
+  desc = Object.getOwnPropertyDescriptor(value, key) || { value: value[key] };
+  if (desc.get) {
+    if (desc.set) {
+      str = ctx.stylize('[Getter/Setter]', 'special');
+    } else {
+      str = ctx.stylize('[Getter]', 'special');
+    }
+  } else {
+    if (desc.set) {
+      str = ctx.stylize('[Setter]', 'special');
+    }
+  }
+  if (!hasOwnProperty(visibleKeys, key)) {
+    name = '[' + key + ']';
+  }
+  if (!str) {
+    if (ctx.seen.indexOf(desc.value) < 0) {
+      if (isNull(recurseTimes)) {
+        str = formatValue(ctx, desc.value, null);
+      } else {
+        str = formatValue(ctx, desc.value, recurseTimes - 1);
+      }
+      if (str.indexOf('\n') > -1) {
+        if (array) {
+          str = str.split('\n').map(function(line) {
+            return '  ' + line;
+          }).join('\n').substr(2);
+        } else {
+          str = '\n' + str.split('\n').map(function(line) {
+            return '   ' + line;
+          }).join('\n');
+        }
+      }
+    } else {
+      str = ctx.stylize('[Circular]', 'special');
+    }
+  }
+  if (isUndefined(name)) {
+    if (array && key.match(/^\d+$/)) {
+      return str;
+    }
+    name = JSON.stringify('' + key);
+    if (name.match(/^"([a-zA-Z_][a-zA-Z_0-9]*)"$/)) {
+      name = name.substr(1, name.length - 2);
+      name = ctx.stylize(name, 'name');
+    } else {
+      name = name.replace(/'/g, "\\'")
+                 .replace(/\\"/g, '"')
+                 .replace(/(^"|"$)/g, "'");
+      name = ctx.stylize(name, 'string');
+    }
+  }
+
+  return name + ': ' + str;
+}
+
+
+function reduceToSingleString(output, base, braces) {
+  var numLinesEst = 0;
+  var length = output.reduce(function(prev, cur) {
+    numLinesEst++;
+    if (cur.indexOf('\n') >= 0) numLinesEst++;
+    return prev + cur.replace(/\u001b\[\d\d?m/g, '').length + 1;
+  }, 0);
+
+  if (length > 60) {
+    return braces[0] +
+           (base === '' ? '' : base + '\n ') +
+           ' ' +
+           output.join(',\n  ') +
+           ' ' +
+           braces[1];
+  }
+
+  return braces[0] + base + ' ' + output.join(', ') + ' ' + braces[1];
+}
+
+
+// NOTE: These type checking functions intentionally don't use `instanceof`
+// because it is fragile and can be easily faked with `Object.create()`.
+exports.types = require('./support/types');
+
+function isArray(ar) {
+  return Array.isArray(ar);
+}
+exports.isArray = isArray;
+
+function isBoolean(arg) {
+  return typeof arg === 'boolean';
+}
+exports.isBoolean = isBoolean;
+
+function isNull(arg) {
+  return arg === null;
+}
+exports.isNull = isNull;
+
+function isNullOrUndefined(arg) {
+  return arg == null;
+}
+exports.isNullOrUndefined = isNullOrUndefined;
+
+function isNumber(arg) {
+  return typeof arg === 'number';
+}
+exports.isNumber = isNumber;
+
+function isString(arg) {
+  return typeof arg === 'string';
+}
+exports.isString = isString;
+
+function isSymbol(arg) {
+  return typeof arg === 'symbol';
+}
+exports.isSymbol = isSymbol;
+
+function isUndefined(arg) {
+  return arg === void 0;
+}
+exports.isUndefined = isUndefined;
+
+function isRegExp(re) {
+  return isObject(re) && objectToString(re) === '[object RegExp]';
+}
+exports.isRegExp = isRegExp;
+exports.types.isRegExp = isRegExp;
+
+function isObject(arg) {
+  return typeof arg === 'object' && arg !== null;
+}
+exports.isObject = isObject;
+
+function isDate(d) {
+  return isObject(d) && objectToString(d) === '[object Date]';
+}
+exports.isDate = isDate;
+exports.types.isDate = isDate;
+
+function isError(e) {
+  return isObject(e) &&
+      (objectToString(e) === '[object Error]' || e instanceof Error);
+}
+exports.isError = isError;
+exports.types.isNativeError = isError;
+
+function isFunction(arg) {
+  return typeof arg === 'function';
+}
+exports.isFunction = isFunction;
+
+function isPrimitive(arg) {
+  return arg === null ||
+         typeof arg === 'boolean' ||
+         typeof arg === 'number' ||
+         typeof arg === 'string' ||
+         typeof arg === 'symbol' ||  // ES6 symbol
+         typeof arg === 'undefined';
+}
+exports.isPrimitive = isPrimitive;
+
+exports.isBuffer = require('./support/isBuffer');
+
+function objectToString(o) {
+  return Object.prototype.toString.call(o);
+}
+
+
+function pad(n) {
+  return n < 10 ? '0' + n.toString(10) : n.toString(10);
+}
+
+
+var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+              'Oct', 'Nov', 'Dec'];
+
+// 26 Feb 16:19:34
+function timestamp() {
+  var d = new Date();
+  var time = [pad(d.getHours()),
+              pad(d.getMinutes()),
+              pad(d.getSeconds())].join(':');
+  return [d.getDate(), months[d.getMonth()], time].join(' ');
+}
+
+
+// log is just a thin wrapper to console.log that prepends a timestamp
+exports.log = function() {
+  console.log('%s - %s', timestamp(), exports.format.apply(exports, arguments));
+};
+
+
+/**
+ * Inherit the prototype methods from one constructor into another.
+ *
+ * The Function.prototype.inherits from lang.js rewritten as a standalone
+ * function (not on Function.prototype). NOTE: If this file is to be loaded
+ * during bootstrapping this function needs to be rewritten using some native
+ * functions as prototype setup using normal JavaScript does not work as
+ * expected during bootstrapping (see mirror.js in r114903).
+ *
+ * @param {function} ctor Constructor function which needs to inherit the
+ *     prototype.
+ * @param {function} superCtor Constructor function to inherit prototype from.
+ */
+exports.inherits = require('inherits');
+
+exports._extend = function(origin, add) {
+  // Don't do anything if add isn't an object
+  if (!add || !isObject(add)) return origin;
+
+  var keys = Object.keys(add);
+  var i = keys.length;
+  while (i--) {
+    origin[keys[i]] = add[keys[i]];
+  }
+  return origin;
+};
+
+function hasOwnProperty(obj, prop) {
+  return Object.prototype.hasOwnProperty.call(obj, prop);
+}
+
+var kCustomPromisifiedSymbol = typeof Symbol !== 'undefined' ? Symbol('util.promisify.custom') : undefined;
+
+exports.promisify = function promisify(original) {
+  if (typeof original !== 'function')
+    throw new TypeError('The "original" argument must be of type Function');
+
+  if (kCustomPromisifiedSymbol && original[kCustomPromisifiedSymbol]) {
+    var fn = original[kCustomPromisifiedSymbol];
+    if (typeof fn !== 'function') {
+      throw new TypeError('The "util.promisify.custom" argument must be of type Function');
+    }
+    Object.defineProperty(fn, kCustomPromisifiedSymbol, {
+      value: fn, enumerable: false, writable: false, configurable: true
+    });
+    return fn;
+  }
+
+  function fn() {
+    var promiseResolve, promiseReject;
+    var promise = new Promise(function (resolve, reject) {
+      promiseResolve = resolve;
+      promiseReject = reject;
+    });
+
+    var args = [];
+    for (var i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+    args.push(function (err, value) {
+      if (err) {
+        promiseReject(err);
+      } else {
+        promiseResolve(value);
+      }
+    });
+
+    try {
+      original.apply(this, args);
+    } catch (err) {
+      promiseReject(err);
+    }
+
+    return promise;
+  }
+
+  Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+
+  if (kCustomPromisifiedSymbol) Object.defineProperty(fn, kCustomPromisifiedSymbol, {
+    value: fn, enumerable: false, writable: false, configurable: true
+  });
+  return Object.defineProperties(
+    fn,
+    getOwnPropertyDescriptors(original)
+  );
+}
+
+exports.promisify.custom = kCustomPromisifiedSymbol
+
+function callbackifyOnRejected(reason, cb) {
+  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
+  // Because `null` is a special error value in callbacks which means "no error
+  // occurred", we error-wrap so the callback consumer can distinguish between
+  // "the promise rejected with null" or "the promise fulfilled with undefined".
+  if (!reason) {
+    var newReason = new Error('Promise was rejected with a falsy value');
+    newReason.reason = reason;
+    reason = newReason;
+  }
+  return cb(reason);
+}
+
+function callbackify(original) {
+  if (typeof original !== 'function') {
+    throw new TypeError('The "original" argument must be of type Function');
+  }
+
+  // We DO NOT return the promise as it gives the user a false sense that
+  // the promise is actually somehow related to the callback's execution
+  // and that the callback throwing will reject the promise.
+  function callbackified() {
+    var args = [];
+    for (var i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+
+    var maybeCb = args.pop();
+    if (typeof maybeCb !== 'function') {
+      throw new TypeError('The last argument must be of type Function');
+    }
+    var self = this;
+    var cb = function() {
+      return maybeCb.apply(self, arguments);
+    };
+    // In true node style we process the callback on `nextTick` with all the
+    // implications (stack, `uncaughtException`, `async_hooks`)
+    original.apply(this, args)
+      .then(function(ret) { process.nextTick(cb.bind(null, null, ret)) },
+            function(rej) { process.nextTick(callbackifyOnRejected.bind(null, rej, cb)) });
+  }
+
+  Object.setPrototypeOf(callbackified, Object.getPrototypeOf(original));
+  Object.defineProperties(callbackified,
+                          getOwnPropertyDescriptors(original));
+  return callbackified;
+}
+exports.callbackify = callbackify;
+
+}).call(this)}).call(this,require('_process'))
+},{"./support/isBuffer":96,"./support/types":97,"_process":48,"inherits":29}],99:[function(require,module,exports){
+(function (global){(function (){
+'use strict';
+
+var forEach = require('foreach');
+var availableTypedArrays = require('available-typed-arrays');
+var callBound = require('call-bind/callBound');
+
+var $toString = callBound('Object.prototype.toString');
+var hasToStringTag = require('has-tostringtag/shams')();
+
+var g = typeof globalThis === 'undefined' ? global : globalThis;
+var typedArrays = availableTypedArrays();
+
+var $slice = callBound('String.prototype.slice');
+var toStrTags = {};
+var gOPD = require('es-abstract/helpers/getOwnPropertyDescriptor');
+var getPrototypeOf = Object.getPrototypeOf; // require('getprototypeof');
+if (hasToStringTag && gOPD && getPrototypeOf) {
+	forEach(typedArrays, function (typedArray) {
+		if (typeof g[typedArray] === 'function') {
+			var arr = new g[typedArray]();
+			if (Symbol.toStringTag in arr) {
+				var proto = getPrototypeOf(arr);
+				var descriptor = gOPD(proto, Symbol.toStringTag);
+				if (!descriptor) {
+					var superProto = getPrototypeOf(proto);
+					descriptor = gOPD(superProto, Symbol.toStringTag);
+				}
+				toStrTags[typedArray] = descriptor.get;
+			}
+		}
+	});
+}
+
+var tryTypedArrays = function tryAllTypedArrays(value) {
+	var foundName = false;
+	forEach(toStrTags, function (getter, typedArray) {
+		if (!foundName) {
+			try {
+				var name = getter.call(value);
+				if (name === typedArray) {
+					foundName = name;
+				}
+			} catch (e) {}
+		}
+	});
+	return foundName;
+};
+
+var isTypedArray = require('is-typed-array');
+
+module.exports = function whichTypedArray(value) {
+	if (!isTypedArray(value)) { return false; }
+	if (!hasToStringTag || !(Symbol.toStringTag in value)) { return $slice($toString(value), 8, -1); }
+	return tryTypedArrays(value);
+};
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"available-typed-arrays":6,"call-bind/callBound":14,"es-abstract/helpers/getOwnPropertyDescriptor":16,"foreach":19,"has-tostringtag/shams":25,"is-typed-array":32}],100:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -11657,2495 +19702,2789 @@ function extend() {
     return target
 }
 
-},{}],64:[function(require,module,exports){
-const { setTimeout } = require('timers');
+},{}],101:[function(require,module,exports){
+(function (Buffer){(function (){
+// ytcog - innertube library - channel object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const ut = require('./ut')();
+const Model = require('./model.js');
+const Video = require('./video.js');
+const Playlist = require('./playlist');
+
+// channel object retrieves channel information and videos
+class Channel extends Model {
+
+	// construct the channel, requires an active session object and options: {id[,order,quantity]}
+	constructor(session, options) {
+		super(session.cookie, session.userAgent);
+		this.type = 'channel';
+		this.session = session;
+		this.quantity = 0;
+		this.results = []; // last fetch/continued cycle
+		this.videos = []; // accumulated videos
+		this.channels = []; // accumulated channels
+		this.playlists = []; // accumulated playlists
+		this.spmap = {
+			"videos,new": "EgZ2aWRlb3MYAyAAMAE%3D",
+			"videos,old": "EgZ2aWRlb3MYAiAAMAE%3D",
+			"videos,views": "EgZ2aWRlb3MYASAAMAE%3D",
+			"playlists,new": "EglwbGF5bGlzdHMYAyABMAE%3D",
+			"playlists,updated": "EglwbGF5bGlzdHMYBCABMAE%3D",
+			"channels,new": "EghjaGFubmVscw%3D%3D",
+			"about,new": "EgVhYm91dA%3D%3D",
+			"search,new": "EgZzZWFyY2g%3D"
+		};
+		this.id = options.id;
+		this.videoCount = -1,
+			this.views = -1,
+			this.subscribers = -1,
+			this.joined = 0,
+			this.updated = 0,
+			this.profiled = 0;
+		this.latest = 0;
+		this.author = '';
+		this.description = '';
+		this.thumbnail = '';
+		this.country = '';
+		this.tags = [];
+		this.options = {
+			id: options.id, //any channel 24 character id
+			items: 'videos', //videos,playlists,channels,about,search
+			order: 'new', // new (videos/playlists), old (videos), views (videos), updated (playlists)
+			quantity: 60, //maximum number of results
+			query: '' //items=search only
+		}
+		this.updateOptions(options);
+		this.page = 0;
+		this.more = '';
+	}
+
+	// convert options into innertube parameters
+	get params() {
+		let sp = this.options.items + ',' + this.options.order;
+		let code = this.spmap[this.options.items + ',new'];
+		if (this.spmap[sp]) code = this.spmap[sp];
+		if (!code) code = this.spmap["videos,new"];
+		return code;
+	}
+
+	// process the retrieved items, create video, playlist or channel objects
+	process(items, now) {
+		let found = [];
+		try {
+			items.forEach((item, i, a) => {
+				let m = item.continuationItemRenderer;
+				let w = item.gridVideoRenderer;
+				let p = item.gridPlaylistRenderer;
+				let c = item.gridChannelRenderer;
+				let v = item.itemSectionRenderer;
+				if (v) {
+					try {
+						v = v.contents[0].videoRenderer;
+					} catch (e) { this.debug(e); }
+				}
+				if ((w) && (w.videoId)) {
+					try {
+						this.quantity++;
+						let ts = 0;
+						if (w.publishedTimeText) {
+							ts = now - 1000 * ut.ageSec(w.publishedTimeText.simpleText);
+						}
+						let video = new Video(this.session, { id: w.videoId, published: ts });
+						if (w.title) w.title.runs.forEach((e) => { video.title += e.text });
+						if ((w.thumbnailOverlays) && (w.thumbnailOverlays.length)) {
+							let a = w.thumbnailOverlays[0].thumbnailOverlayTimeStatusRenderer;
+							if ((a) && (a.text)) video.duration = ut.durSec(a.text.simpleText);
+						}
+						if (w.viewCountText) video.views = ut.viewQ(w.viewCountText.simpleText);
+						if (ts > this.latest) this.latest = ts;
+						video.author = this.author;
+						video.channelId = this.id;
+						video.channelThumb = this.thumbnail;
+						video.country = this.country;
+						found.push(video);
+					} catch (e) { this.debug(e); }
+				} else if ((c) && (c.channelId)) {
+					try {
+						this.quantity++;
+						let channel = new Channel(this.session, { id: c.channelId });
+						let ct = c.thumbnail.thumbnails;
+						if (ct) {
+							ct.forEach((t) => {
+								if (t.url) channel.thumbnail = t.url;
+							});
+						}
+						let cv = c.videoCountText;
+						if ((cv) && (cv.runs) && (cv.runs.length)) channel.videoCount = ut.viewQ(cv.runs[0].text);
+						let cs = c.subscriberCountText;
+						if ((cs) && (cs.simpleText)) channel.subscribers = ut.viewQ(cs.simpleText);
+						if ((c.title) && (c.title.simpleText)) channel.author = c.title.simpleText;
+						found.push(channel);
+					} catch (e) { this.debug(e); }
+				} else if ((p) && (p.playlistId)) {
+					try {
+						this.quantity++;
+						let playlist = new Playlist(this.session, { id: p.playlistId });
+						let pt = p.thumbnail.thumbnails;
+						if ((pt) && (pt.length)) {
+							pt.forEach((t) => {
+								if (t.url) playlist.thumbnail = t.url;
+							});
+						}
+						if (p.title.runs[0].text) playlist.title = p.title.runs[0].text;
+						if (p.videoCountShortText.simpleText) playlist.videoCount = ut.viewQ(p.videoCountShortText.simpleText);
+						playlist.compiler = this.author;
+						playlist.channelId = this.id;
+						found.push(playlist);
+					} catch (e) { this.debug(e); }
+				} else if ((v) && (v.videoId)) {
+					try {
+						this.quantity++;
+						let ts = 0;
+						if (v.publishedTimeText) {
+							ts = now - 1000 * ut.ageSec(v.publishedTimeText.simpleText);
+						}
+						let video = new Video(this.session, { id: v.videoId, published: ts });
+						if (v.title) v.title.runs.forEach((e) => { video.title += e.text });
+						if (v.descriptionSnippet) v.descriptionSnippet.runs.forEach((e) => { video.description += e.text });
+						if (v.lengthText) video.duration = ut.durSec(v.lengthText.simpleText);
+						if (v.viewCountText) video.views = ut.viewQ(v.viewCountText.simpleText);
+						video.author = this.author;
+						video.channelId = this.id;
+						video.channelThumb = this.thumbnail;
+						video.country = this.country;
+						if (ts > this.latest) this.latest = ts;
+						found.push(video);
+					} catch (e) { this.debug(e); }
+				} else if (m) {
+					try {
+						this.more = m.continuationEndpoint.continuationCommand.token;
+					} catch (e) { this.debug(e); }
+				}
+			});
+		} catch (e) { this.debug(e); }
+		found.forEach((e) => {
+			this.results.push(e);
+			this.add(e);
+		});
+	}
+
+	// initial fetch request
+	async fetch(options) {
+		if (options) this.updateOptions(options);
+		this.page = 0;
+		this.data = [];
+		this.quantity = 0;
+		this.results = [];
+		let postData = {
+			context: this.session.context,
+			params: this.params,
+			browseId: this.options.id
+		};
+		if (this.options.items == 'search') postData.query = this.options.query;
+		postData = ut.js(postData);
+		let hdrs = {
+			'content-type': 'application/json',
+			'content-length': Buffer.byteLength(postData, 'utf8'),
+			'x-goog-authuser': '0',
+			'x-goog-visitor-id': this.session.context.client.visitorData,
+			'x-youtube-client-name': '1',
+			'x-youtube-client-version': this.session.context.client.clientVersion,
+			'x-origin': 'https://www.youtube.com'
+		};
+		if (this.session.loggedIn) hdrs['authorization'] = this.session.player.idhashFn(this.sapisid);
+		let body = await this.httpsPost(
+			'https://www.youtube.com/youtubei/v1/browse?key=' + this.session.key,
+			{
+				path: '/youtubei/v1/browse?key=' + this.session.key,
+				headers: hdrs
+			},
+			postData,
+			true
+		);
+		if (body) {
+			this.data.push(ut.jp(body));
+			try {
+				let ra = this.data[0].alerts;
+				if ((ra) && (ra.length)) {
+					ra = ra[0].alertRenderer;
+					if (ra) {
+						if (ra.type) this.status = ra.type;
+						let tx = ra.text;
+						if (tx.simpleText) this.reason = tx.simpleText;
+					}
+				}
+			} catch (e) { this.debug(e); }
+			if (this.status != 'ERROR') {
+				let tab = ['home', 'videos', 'playlists', 'community', 'channels', 'about', 'search'].indexOf(this.options.items);
+				(tab == 5) ? this.profiled = ut.now() : this.updated = ut.now();
+				try {
+					let md = this.data[0].metadata.channelMetadataRenderer;
+					if (md.externalId) this.id = md.externalId;
+					if (md.title) this.author = md.title;
+					if (md.description) this.description = md.description;
+					let th = md.avatar.thumbnails[0];
+					if (th.url) this.thumbnail = th.url;
+				} catch (e) { this.debug(e); }
+				try {
+					let hd = this.data[0].header.c4TabbedHeaderRenderer.subscriberCountText;
+					if (hd.simpleText) this.subscribers = ut.viewQ(hd.simpleText);
+				} catch (e) { this.debug(e); }
+				try {
+					let mf = this.data[0].microformat.microformatDataRenderer;
+					if (mf.tags) this.tags = mf.tags;
+				} catch (e) { this.debug(e); }
+				if (tab == 5) {
+					try { //about
+						let md = this.data[0].contents.twoColumnBrowseResultsRenderer.tabs[5].
+							tabRenderer.content.sectionListRenderer.contents[0].
+							itemSectionRenderer.contents[0].channelAboutFullMetadataRenderer;
+						let vc = md.viewCountText;
+						if (vc.simpleText) this.views = ut.viewQ(vc.simpleText);
+						let jd = md.joinedDateText.runs[1];
+						if (jd.text) this.joined = ut.dateTS(jd.text);
+						let co = md.country;
+						if (co.simpleText) this.country = co.simpleText;
+					} catch (e) {
+						this.debug(e);
+						this.status = 'NOK';
+						this.reason = 'Could not find channel metadata'
+					}
+				} else {
+					try {
+						let gi;
+						if (tab == 6) { //search
+							gi = this.data[0].contents.twoColumnBrowseResultsRenderer.tabs[tab].
+								expandableTabRenderer.content.sectionListRenderer.contents;
+						} else { //videos,playlists,channels
+							gi = this.data[0].contents.twoColumnBrowseResultsRenderer.tabs[tab].
+								tabRenderer.content.sectionListRenderer.contents[0].
+								itemSectionRenderer.contents[0].gridRenderer.items;
+						}
+						this.process(gi, this.updated);
+						if (this.quantity < this.options.quantity) {
+							await this.continued();
+						} else {
+							this.status = 'OK';
+							this.reason = '';
+						}
+					} catch (e) {
+						this.debug(e);
+						this.status = 'OK';
+						this.reason = 'No results';
+					}
+				}
+			}
+		}
+	}
+
+	// continuation if required
+	async continued() {
+		if (!this.more.length) {
+			this.status = 'OK';
+			this.reason = '';
+		} else {
+			let last = this.quantity;
+			let postData = ut.js({
+				context: this.session.context,
+				continuation: this.more
+			});
+			let body = await this.httpsPost(
+				'https://www.youtube.com/youtubei/v1/browse?key=' + this.session.key,
+				{
+					path: '/youtubei/v1/browse?key=' + this.session.key,
+					headers: {
+						'content-type': 'application/json',
+						'content-length': Buffer.byteLength(postData, 'utf8'),
+						'x-goog-visitor-id': this.session.context.client.visitorData,
+					},
+				},
+				postData,
+				true
+			);
+			if (body) {
+				this.page++;
+				this.data.push(ut.jp(body));
+				try {
+					let gi = this.data[this.page].onResponseReceivedActions[0].appendContinuationItemsAction.continuationItems;
+					this.process(gi, this.updated);
+					if ((this.quantity < this.options.quantity) && (last < this.quantity)) {
+						await this.continued();
+					}
+				} catch (e) { this.debug(e); }
+			}
+		}
+	}
 
-// A cache that expires.
-module.exports = class Cache extends Map {
-  constructor(timeout = 1000) {
-    super();
-    this.timeout = timeout;
-  }
-  set(key, value) {
-    if (this.has(key)) {
-      clearTimeout(super.get(key).tid);
-    }
-    super.set(key, {
-      tid: setTimeout(this.delete.bind(this, key), this.timeout).unref(),
-      value,
-    });
-  }
-  get(key) {
-    let entry = super.get(key);
-    if (entry) {
-      return entry.value;
-    }
-    return null;
-  }
-  getOrSet(key, fn) {
-    if (this.has(key)) {
-      return this.get(key);
-    } else {
-      let value = fn();
-      this.set(key, value);
-      (async() => {
-        try {
-          await value;
-        } catch (err) {
-          this.delete(key);
-        }
-      })();
-      return value;
-    }
-  }
-  delete(key) {
-    let entry = super.get(key);
-    if (entry) {
-      clearTimeout(entry.tid);
-      super.delete(key);
-    }
-  }
-  clear() {
-    for (let entry of this.values()) {
-      clearTimeout(entry.tid);
-    }
-    super.clear();
-  }
-};
-
-},{"timers":59}],65:[function(require,module,exports){
-const utils = require('./utils');
-const FORMATS = require('./formats');
-
-
-// Use these to help sort formats, higher index is better.
-const audioEncodingRanks = [
-  'mp4a',
-  'mp3',
-  'vorbis',
-  'aac',
-  'opus',
-  'flac',
-];
-const videoEncodingRanks = [
-  'mp4v',
-  'avc1',
-  'Sorenson H.283',
-  'MPEG-4 Visual',
-  'VP8',
-  'VP9',
-  'H.264',
-];
-
-const getVideoBitrate = format => format.bitrate || 0;
-const getVideoEncodingRank = format =>
-  videoEncodingRanks.findIndex(enc => format.codecs && format.codecs.includes(enc));
-const getAudioBitrate = format => format.audioBitrate || 0;
-const getAudioEncodingRank = format =>
-  audioEncodingRanks.findIndex(enc => format.codecs && format.codecs.includes(enc));
-
-
-/**
- * Sort formats by a list of functions.
- *
- * @param {Object} a
- * @param {Object} b
- * @param {Array.<Function>} sortBy
- * @returns {number}
- */
-const sortFormatsBy = (a, b, sortBy) => {
-  let res = 0;
-  for (let fn of sortBy) {
-    res = fn(b) - fn(a);
-    if (res !== 0) {
-      break;
-    }
-  }
-  return res;
-};
-
-
-const sortFormatsByVideo = (a, b) => sortFormatsBy(a, b, [
-  format => parseInt(format.qualityLabel),
-  getVideoBitrate,
-  getVideoEncodingRank,
-]);
-
-
-const sortFormatsByAudio = (a, b) => sortFormatsBy(a, b, [
-  getAudioBitrate,
-  getAudioEncodingRank,
-]);
-
-
-/**
- * Sort formats from highest quality to lowest.
- *
- * @param {Object} a
- * @param {Object} b
- * @returns {number}
- */
-exports.sortFormats = (a, b) => sortFormatsBy(a, b, [
-  // Formats with both video and audio are ranked highest.
-  format => +!!format.isHLS,
-  format => +!!format.isDashMPD,
-  format => +(format.contentLength > 0),
-  format => +(format.hasVideo && format.hasAudio),
-  format => +format.hasVideo,
-  format => parseInt(format.qualityLabel) || 0,
-  getVideoBitrate,
-  getAudioBitrate,
-  getVideoEncodingRank,
-  getAudioEncodingRank,
-]);
-
-
-/**
- * Choose a format depending on the given options.
- *
- * @param {Array.<Object>} formats
- * @param {Object} options
- * @returns {Object}
- * @throws {Error} when no format matches the filter/format rules
- */
-exports.chooseFormat = (formats, options) => {
-  if (typeof options.format === 'object') {
-    if (!options.format.url) {
-      throw Error('Invalid format given, did you use `ytdl.getInfo()`?');
-    }
-    return options.format;
-  }
-
-  if (options.filter) {
-    formats = exports.filterFormats(formats, options.filter);
-  }
-
-  // We currently only support HLS-Formats for livestreams
-  // So we (now) remove all non-HLS streams
-  if (formats.some(fmt => fmt.isHLS)) {
-    formats = formats.filter(fmt => fmt.isHLS || !fmt.isLive);
-  }
-
-  let format;
-  const quality = options.quality || 'highest';
-  switch (quality) {
-    case 'highest':
-      format = formats[0];
-      break;
-
-    case 'lowest':
-      format = formats[formats.length - 1];
-      break;
-
-    case 'highestaudio': {
-      formats = exports.filterFormats(formats, 'audio');
-      formats.sort(sortFormatsByAudio);
-      // Filter for only the best audio format
-      const bestAudioFormat = formats[0];
-      formats = formats.filter(f => sortFormatsByAudio(bestAudioFormat, f) === 0);
-      // Check for the worst video quality for the best audio quality and pick according
-      // This does not loose default sorting of video encoding and bitrate
-      const worstVideoQuality = formats.map(f => parseInt(f.qualityLabel) || 0).sort((a, b) => a - b)[0];
-      format = formats.find(f => (parseInt(f.qualityLabel) || 0) === worstVideoQuality);
-      break;
-    }
-
-    case 'lowestaudio':
-      formats = exports.filterFormats(formats, 'audio');
-      formats.sort(sortFormatsByAudio);
-      format = formats[formats.length - 1];
-      break;
-
-    case 'highestvideo': {
-      formats = exports.filterFormats(formats, 'video');
-      formats.sort(sortFormatsByVideo);
-      // Filter for only the best video format
-      const bestVideoFormat = formats[0];
-      formats = formats.filter(f => sortFormatsByVideo(bestVideoFormat, f) === 0);
-      // Check for the worst audio quality for the best video quality and pick according
-      // This does not loose default sorting of audio encoding and bitrate
-      const worstAudioQuality = formats.map(f => f.audioBitrate || 0).sort((a, b) => a - b)[0];
-      format = formats.find(f => (f.audioBitrate || 0) === worstAudioQuality);
-      break;
-    }
-
-    case 'lowestvideo':
-      formats = exports.filterFormats(formats, 'video');
-      formats.sort(sortFormatsByVideo);
-      format = formats[formats.length - 1];
-      break;
-
-    default:
-      format = getFormatByQuality(quality, formats);
-      break;
-  }
-
-  if (!format) {
-    throw Error(`No such format found: ${quality}`);
-  }
-  return format;
-};
-
-/**
- * Gets a format based on quality or array of quality's
- *
- * @param {string|[string]} quality
- * @param {[Object]} formats
- * @returns {Object}
- */
-const getFormatByQuality = (quality, formats) => {
-  let getFormat = itag => formats.find(format => `${format.itag}` === `${itag}`);
-  if (Array.isArray(quality)) {
-    return getFormat(quality.find(q => getFormat(q)));
-  } else {
-    return getFormat(quality);
-  }
-};
-
-
-/**
- * @param {Array.<Object>} formats
- * @param {Function} filter
- * @returns {Array.<Object>}
- */
-exports.filterFormats = (formats, filter) => {
-  let fn;
-  switch (filter) {
-    case 'videoandaudio':
-    case 'audioandvideo':
-      fn = format => format.hasVideo && format.hasAudio;
-      break;
-
-    case 'video':
-      fn = format => format.hasVideo;
-      break;
-
-    case 'videoonly':
-      fn = format => format.hasVideo && !format.hasAudio;
-      break;
-
-    case 'audio':
-      fn = format => format.hasAudio;
-      break;
-
-    case 'audioonly':
-      fn = format => !format.hasVideo && format.hasAudio;
-      break;
-
-    default:
-      if (typeof filter === 'function') {
-        fn = filter;
-      } else {
-        throw TypeError(`Given filter (${filter}) is not supported`);
-      }
-  }
-  return formats.filter(format => !!format.url && fn(format));
-};
-
-
-/**
- * @param {Object} format
- * @returns {Object}
- */
-exports.addFormatMeta = format => {
-  format = Object.assign({}, FORMATS[format.itag], format);
-  format.hasVideo = !!format.qualityLabel;
-  format.hasAudio = !!format.audioBitrate;
-  format.container = format.mimeType ?
-    format.mimeType.split(';')[0].split('/')[1] : null;
-  format.codecs = format.mimeType ?
-    utils.between(format.mimeType, 'codecs="', '"') : null;
-  format.videoCodec = format.hasVideo && format.codecs ?
-    format.codecs.split(', ')[0] : null;
-  format.audioCodec = format.hasAudio && format.codecs ?
-    format.codecs.split(', ').slice(-1)[0] : null;
-  format.isLive = /\bsource[/=]yt_live_broadcast\b/.test(format.url);
-  format.isHLS = /\/manifest\/hls_(variant|playlist)\//.test(format.url);
-  format.isDashMPD = /\/manifest\/dash\//.test(format.url);
-  return format;
-};
-
-},{"./formats":66,"./utils":72}],66:[function(require,module,exports){
-/**
- * http://en.wikipedia.org/wiki/YouTube#Quality_and_formats
- */
-module.exports = {
-
-  5: {
-    mimeType: 'video/flv; codecs="Sorenson H.283, mp3"',
-    qualityLabel: '240p',
-    bitrate: 250000,
-    audioBitrate: 64,
-  },
-
-  6: {
-    mimeType: 'video/flv; codecs="Sorenson H.263, mp3"',
-    qualityLabel: '270p',
-    bitrate: 800000,
-    audioBitrate: 64,
-  },
-
-  13: {
-    mimeType: 'video/3gp; codecs="MPEG-4 Visual, aac"',
-    qualityLabel: null,
-    bitrate: 500000,
-    audioBitrate: null,
-  },
-
-  17: {
-    mimeType: 'video/3gp; codecs="MPEG-4 Visual, aac"',
-    qualityLabel: '144p',
-    bitrate: 50000,
-    audioBitrate: 24,
-  },
-
-  18: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '360p',
-    bitrate: 500000,
-    audioBitrate: 96,
-  },
-
-  22: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 2000000,
-    audioBitrate: 192,
-  },
-
-  34: {
-    mimeType: 'video/flv; codecs="H.264, aac"',
-    qualityLabel: '360p',
-    bitrate: 500000,
-    audioBitrate: 128,
-  },
-
-  35: {
-    mimeType: 'video/flv; codecs="H.264, aac"',
-    qualityLabel: '480p',
-    bitrate: 800000,
-    audioBitrate: 128,
-  },
-
-  36: {
-    mimeType: 'video/3gp; codecs="MPEG-4 Visual, aac"',
-    qualityLabel: '240p',
-    bitrate: 175000,
-    audioBitrate: 32,
-  },
-
-  37: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '1080p',
-    bitrate: 3000000,
-    audioBitrate: 192,
-  },
-
-  38: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '3072p',
-    bitrate: 3500000,
-    audioBitrate: 192,
-  },
-
-  43: {
-    mimeType: 'video/webm; codecs="VP8, vorbis"',
-    qualityLabel: '360p',
-    bitrate: 500000,
-    audioBitrate: 128,
-  },
-
-  44: {
-    mimeType: 'video/webm; codecs="VP8, vorbis"',
-    qualityLabel: '480p',
-    bitrate: 1000000,
-    audioBitrate: 128,
-  },
-
-  45: {
-    mimeType: 'video/webm; codecs="VP8, vorbis"',
-    qualityLabel: '720p',
-    bitrate: 2000000,
-    audioBitrate: 192,
-  },
-
-  46: {
-    mimeType: 'audio/webm; codecs="vp8, vorbis"',
-    qualityLabel: '1080p',
-    bitrate: null,
-    audioBitrate: 192,
-  },
-
-  82: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '360p',
-    bitrate: 500000,
-    audioBitrate: 96,
-  },
-
-  83: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '240p',
-    bitrate: 500000,
-    audioBitrate: 96,
-  },
-
-  84: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 2000000,
-    audioBitrate: 192,
-  },
-
-  85: {
-    mimeType: 'video/mp4; codecs="H.264, aac"',
-    qualityLabel: '1080p',
-    bitrate: 3000000,
-    audioBitrate: 192,
-  },
-
-  91: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '144p',
-    bitrate: 100000,
-    audioBitrate: 48,
-  },
-
-  92: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '240p',
-    bitrate: 150000,
-    audioBitrate: 48,
-  },
-
-  93: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '360p',
-    bitrate: 500000,
-    audioBitrate: 128,
-  },
-
-  94: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '480p',
-    bitrate: 800000,
-    audioBitrate: 128,
-  },
-
-  95: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 1500000,
-    audioBitrate: 256,
-  },
-
-  96: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '1080p',
-    bitrate: 2500000,
-    audioBitrate: 256,
-  },
-
-  100: {
-    mimeType: 'audio/webm; codecs="VP8, vorbis"',
-    qualityLabel: '360p',
-    bitrate: null,
-    audioBitrate: 128,
-  },
-
-  101: {
-    mimeType: 'audio/webm; codecs="VP8, vorbis"',
-    qualityLabel: '360p',
-    bitrate: null,
-    audioBitrate: 192,
-  },
-
-  102: {
-    mimeType: 'audio/webm; codecs="VP8, vorbis"',
-    qualityLabel: '720p',
-    bitrate: null,
-    audioBitrate: 192,
-  },
-
-  120: {
-    mimeType: 'video/flv; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 2000000,
-    audioBitrate: 128,
-  },
-
-  127: {
-    mimeType: 'audio/ts; codecs="aac"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 96,
-  },
-
-  128: {
-    mimeType: 'audio/ts; codecs="aac"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 96,
-  },
-
-  132: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '240p',
-    bitrate: 150000,
-    audioBitrate: 48,
-  },
-
-  133: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '240p',
-    bitrate: 200000,
-    audioBitrate: null,
-  },
-
-  134: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '360p',
-    bitrate: 300000,
-    audioBitrate: null,
-  },
-
-  135: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '480p',
-    bitrate: 500000,
-    audioBitrate: null,
-  },
-
-  136: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '720p',
-    bitrate: 1000000,
-    audioBitrate: null,
-  },
-
-  137: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '1080p',
-    bitrate: 2500000,
-    audioBitrate: null,
-  },
-
-  138: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '4320p',
-    bitrate: 13500000,
-    audioBitrate: null,
-  },
-
-  139: {
-    mimeType: 'audio/mp4; codecs="aac"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 48,
-  },
-
-  140: {
-    mimeType: 'audio/m4a; codecs="aac"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 128,
-  },
-
-  141: {
-    mimeType: 'audio/mp4; codecs="aac"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 256,
-  },
-
-  151: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 50000,
-    audioBitrate: 24,
-  },
-
-  160: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '144p',
-    bitrate: 100000,
-    audioBitrate: null,
-  },
-
-  171: {
-    mimeType: 'audio/webm; codecs="vorbis"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 128,
-  },
-
-  172: {
-    mimeType: 'audio/webm; codecs="vorbis"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 192,
-  },
-
-  242: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '240p',
-    bitrate: 100000,
-    audioBitrate: null,
-  },
-
-  243: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '360p',
-    bitrate: 250000,
-    audioBitrate: null,
-  },
-
-  244: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '480p',
-    bitrate: 500000,
-    audioBitrate: null,
-  },
-
-  247: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '720p',
-    bitrate: 700000,
-    audioBitrate: null,
-  },
-
-  248: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1080p',
-    bitrate: 1500000,
-    audioBitrate: null,
-  },
-
-  249: {
-    mimeType: 'audio/webm; codecs="opus"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 48,
-  },
-
-  250: {
-    mimeType: 'audio/webm; codecs="opus"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 64,
-  },
-
-  251: {
-    mimeType: 'audio/webm; codecs="opus"',
-    qualityLabel: null,
-    bitrate: null,
-    audioBitrate: 160,
-  },
-
-  264: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '1440p',
-    bitrate: 4000000,
-    audioBitrate: null,
-  },
-
-  266: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '2160p',
-    bitrate: 12500000,
-    audioBitrate: null,
-  },
-
-  271: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1440p',
-    bitrate: 9000000,
-    audioBitrate: null,
-  },
-
-  272: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '4320p',
-    bitrate: 20000000,
-    audioBitrate: null,
-  },
-
-  278: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '144p 30fps',
-    bitrate: 80000,
-    audioBitrate: null,
-  },
-
-  298: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '720p',
-    bitrate: 3000000,
-    audioBitrate: null,
-  },
-
-  299: {
-    mimeType: 'video/mp4; codecs="H.264"',
-    qualityLabel: '1080p',
-    bitrate: 5500000,
-    audioBitrate: null,
-  },
-
-  300: {
-    mimeType: 'video/ts; codecs="H.264, aac"',
-    qualityLabel: '720p',
-    bitrate: 1318000,
-    audioBitrate: 48,
-  },
-
-  302: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '720p HFR',
-    bitrate: 2500000,
-    audioBitrate: null,
-  },
-
-  303: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1080p HFR',
-    bitrate: 5000000,
-    audioBitrate: null,
-  },
-
-  308: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1440p HFR',
-    bitrate: 10000000,
-    audioBitrate: null,
-  },
-
-  313: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '2160p',
-    bitrate: 13000000,
-    audioBitrate: null,
-  },
-
-  315: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '2160p HFR',
-    bitrate: 20000000,
-    audioBitrate: null,
-  },
-
-  330: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '144p HDR, HFR',
-    bitrate: 80000,
-    audioBitrate: null,
-  },
-
-  331: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '240p HDR, HFR',
-    bitrate: 100000,
-    audioBitrate: null,
-  },
-
-  332: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '360p HDR, HFR',
-    bitrate: 250000,
-    audioBitrate: null,
-  },
-
-  333: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '240p HDR, HFR',
-    bitrate: 500000,
-    audioBitrate: null,
-  },
-
-  334: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '720p HDR, HFR',
-    bitrate: 1000000,
-    audioBitrate: null,
-  },
-
-  335: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1080p HDR, HFR',
-    bitrate: 1500000,
-    audioBitrate: null,
-  },
-
-  336: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '1440p HDR, HFR',
-    bitrate: 5000000,
-    audioBitrate: null,
-  },
-
-  337: {
-    mimeType: 'video/webm; codecs="VP9"',
-    qualityLabel: '2160p HDR, HFR',
-    bitrate: 12000000,
-    audioBitrate: null,
-  },
-
-};
-
-},{}],67:[function(require,module,exports){
-(function (setImmediate){(function (){
-const PassThrough = require('stream').PassThrough;
-const getInfo = require('./info');
-const utils = require('./utils');
-const formatUtils = require('./format-utils');
-const urlUtils = require('./url-utils');
-const sig = require('./sig');
-const miniget = require('miniget');
-const m3u8stream = require('m3u8stream');
-const { parseTimestamp } = require('m3u8stream');
-
-
-/**
- * @param {string} link
- * @param {!Object} options
- * @returns {ReadableStream}
- */
-const ytdl = (link, options) => {
-  const stream = createStream(options);
-  ytdl.getInfo(link, options).then(info => {
-    downloadFromInfoCallback(stream, info, options);
-  }, stream.emit.bind(stream, 'error'));
-  return stream;
-};
-module.exports = ytdl;
-
-ytdl.getBasicInfo = getInfo.getBasicInfo;
-ytdl.getInfo = getInfo.getInfo;
-ytdl.chooseFormat = formatUtils.chooseFormat;
-ytdl.filterFormats = formatUtils.filterFormats;
-ytdl.validateID = urlUtils.validateID;
-ytdl.validateURL = urlUtils.validateURL;
-ytdl.getURLVideoID = urlUtils.getURLVideoID;
-ytdl.getVideoID = urlUtils.getVideoID;
-ytdl.cache = {
-  sig: sig.cache,
-  info: getInfo.cache,
-  watch: getInfo.watchPageCache,
-  cookie: getInfo.cookieCache,
-};
-ytdl.version = require('../package.json').version;
-
-
-const createStream = options => {
-  const stream = new PassThrough({
-    highWaterMark: (options && options.highWaterMark) || 1024 * 512,
-  });
-  stream._destroy = () => { stream.destroyed = true; };
-  return stream;
-};
-
-
-const pipeAndSetEvents = (req, stream, end) => {
-  // Forward events from the request to the stream.
-  [
-    'abort', 'request', 'response', 'error', 'redirect', 'retry', 'reconnect',
-  ].forEach(event => {
-    req.prependListener(event, stream.emit.bind(stream, event));
-  });
-  req.pipe(stream, { end });
-};
-
-
-/**
- * Chooses a format to download.
- *
- * @param {stream.Readable} stream
- * @param {Object} info
- * @param {Object} options
- */
-const downloadFromInfoCallback = (stream, info, options) => {
-  options = options || {};
-
-  let err = utils.playError(info.player_response, ['UNPLAYABLE', 'LIVE_STREAM_OFFLINE', 'LOGIN_REQUIRED']);
-  if (err) {
-    stream.emit('error', err);
-    return;
-  }
-
-  if (!info.formats.length) {
-    stream.emit('error', Error('This video is unavailable'));
-    return;
-  }
-
-  let format;
-  try {
-    format = formatUtils.chooseFormat(info.formats, options);
-  } catch (e) {
-    stream.emit('error', e);
-    return;
-  }
-  stream.emit('info', info, format);
-  if (stream.destroyed) { return; }
-
-  let contentLength, downloaded = 0;
-  const ondata = chunk => {
-    downloaded += chunk.length;
-    stream.emit('progress', chunk.length, downloaded, contentLength);
-  };
-
-  // Download the file in chunks, in this case the default is 10MB,
-  // anything over this will cause youtube to throttle the download
-  const dlChunkSize = options.dlChunkSize || 1024 * 1024 * 10;
-  let req;
-  let shouldEnd = true;
-
-  if (format.isHLS || format.isDashMPD) {
-    req = m3u8stream(format.url, {
-      chunkReadahead: +info.live_chunk_readahead,
-      begin: options.begin || (format.isLive && Date.now()),
-      liveBuffer: options.liveBuffer,
-      requestOptions: options.requestOptions,
-      parser: format.isDashMPD ? 'dash-mpd' : 'm3u8',
-      id: format.itag,
-    });
-
-    req.on('progress', (segment, totalSegments) => {
-      stream.emit('progress', segment.size, segment.num, totalSegments);
-    });
-    pipeAndSetEvents(req, stream, shouldEnd);
-  } else {
-    const requestOptions = Object.assign({}, options.requestOptions, {
-      maxReconnects: 6,
-      maxRetries: 3,
-      backoff: { inc: 500, max: 10000 },
-    });
-
-    let shouldBeChunked = dlChunkSize !== 0 && (!format.hasAudio || !format.hasVideo);
-
-    if (shouldBeChunked) {
-      let start = (options.range && options.range.start) || 0;
-      let end = start + dlChunkSize;
-      const rangeEnd = options.range && options.range.end;
-
-      contentLength = options.range ?
-        (rangeEnd ? rangeEnd + 1 : parseInt(format.contentLength)) - start :
-        parseInt(format.contentLength);
-
-      const getNextChunk = () => {
-        if (!rangeEnd && end >= contentLength) end = 0;
-        if (rangeEnd && end > rangeEnd) end = rangeEnd;
-        shouldEnd = !end || end === rangeEnd;
-
-        requestOptions.headers = Object.assign({}, requestOptions.headers, {
-          Range: `bytes=${start}-${end || ''}`,
-        });
-
-        req = miniget(format.url, requestOptions);
-        req.on('data', ondata);
-        req.on('end', () => {
-          if (stream.destroyed) { return; }
-          if (end && end !== rangeEnd) {
-            start = end + 1;
-            end += dlChunkSize;
-            getNextChunk();
-          }
-        });
-        pipeAndSetEvents(req, stream, shouldEnd);
-      };
-      getNextChunk();
-    } else {
-      // Audio only and video only formats don't support begin
-      if (options.begin) {
-        format.url += `&begin=${parseTimestamp(options.begin)}`;
-      }
-      if (options.range && (options.range.start || options.range.end)) {
-        requestOptions.headers = Object.assign({}, requestOptions.headers, {
-          Range: `bytes=${options.range.start || '0'}-${options.range.end || ''}`,
-        });
-      }
-      req = miniget(format.url, requestOptions);
-      req.on('response', res => {
-        if (stream.destroyed) { return; }
-        contentLength = contentLength || parseInt(res.headers['content-length']);
-      });
-      req.on('data', ondata);
-      pipeAndSetEvents(req, stream, shouldEnd);
-    }
-  }
-
-  stream._destroy = () => {
-    stream.destroyed = true;
-    req.destroy();
-    req.end();
-  };
-};
-
-
-/**
- * Can be used to download video after its `info` is gotten through
- * `ytdl.getInfo()`. In case the user might want to look at the
- * `info` object before deciding to download.
- *
- * @param {Object} info
- * @param {!Object} options
- * @returns {ReadableStream}
- */
-ytdl.downloadFromInfo = (info, options) => {
-  const stream = createStream(options);
-  if (!info.full) {
-    throw Error('Cannot use `ytdl.downloadFromInfo()` when called ' +
-      'with info from `ytdl.getBasicInfo()`');
-  }
-  setImmediate(() => {
-    downloadFromInfoCallback(stream, info, options);
-  });
-  return stream;
-};
-
-}).call(this)}).call(this,require("timers").setImmediate)
-},{"../package.json":73,"./format-utils":65,"./info":69,"./sig":70,"./url-utils":71,"./utils":72,"m3u8stream":11,"miniget":15,"stream":23,"timers":59}],68:[function(require,module,exports){
-const utils = require('./utils');
-const qs = require('querystring');
-const { parseTimestamp } = require('m3u8stream');
-
-
-const BASE_URL = 'https://www.youtube.com/watch?v=';
-const TITLE_TO_CATEGORY = {
-  song: { name: 'Music', url: 'https://music.youtube.com/' },
-};
-
-const getText = obj => obj ? obj.runs ? obj.runs[0].text : obj.simpleText : null;
-
-
-/**
- * Get video media.
- *
- * @param {Object} info
- * @returns {Object}
- */
-exports.getMedia = info => {
-  let media = {};
-  let results = [];
-  try {
-    results = info.response.contents.twoColumnWatchNextResults.results.results.contents;
-  } catch (err) {
-    // Do nothing
-  }
-
-  let result = results.find(v => v.videoSecondaryInfoRenderer);
-  if (!result) { return {}; }
-
-  try {
-    let metadataRows =
-      (result.metadataRowContainer || result.videoSecondaryInfoRenderer.metadataRowContainer)
-        .metadataRowContainerRenderer.rows;
-    for (let row of metadataRows) {
-      if (row.metadataRowRenderer) {
-        let title = getText(row.metadataRowRenderer.title).toLowerCase();
-        let contents = row.metadataRowRenderer.contents[0];
-        media[title] = getText(contents);
-        let runs = contents.runs;
-        if (runs && runs[0].navigationEndpoint) {
-          media[`${title}_url`] = new URL(
-            runs[0].navigationEndpoint.commandMetadata.webCommandMetadata.url, BASE_URL).toString();
-        }
-        if (title in TITLE_TO_CATEGORY) {
-          media.category = TITLE_TO_CATEGORY[title].name;
-          media.category_url = TITLE_TO_CATEGORY[title].url;
-        }
-      } else if (row.richMetadataRowRenderer) {
-        let contents = row.richMetadataRowRenderer.contents;
-        let boxArt = contents
-          .filter(meta => meta.richMetadataRenderer.style === 'RICH_METADATA_RENDERER_STYLE_BOX_ART');
-        for (let { richMetadataRenderer } of boxArt) {
-          let meta = richMetadataRenderer;
-          media.year = getText(meta.subtitle);
-          let type = getText(meta.callToAction).split(' ')[1];
-          media[type] = getText(meta.title);
-          media[`${type}_url`] = new URL(
-            meta.endpoint.commandMetadata.webCommandMetadata.url, BASE_URL).toString();
-          media.thumbnails = meta.thumbnail.thumbnails;
-        }
-        let topic = contents
-          .filter(meta => meta.richMetadataRenderer.style === 'RICH_METADATA_RENDERER_STYLE_TOPIC');
-        for (let { richMetadataRenderer } of topic) {
-          let meta = richMetadataRenderer;
-          media.category = getText(meta.title);
-          media.category_url = new URL(
-            meta.endpoint.commandMetadata.webCommandMetadata.url, BASE_URL).toString();
-        }
-      }
-    }
-  } catch (err) {
-    // Do nothing.
-  }
-
-  return media;
-};
-
-
-const isVerified = badges => !!(badges && badges.find(b => b.metadataBadgeRenderer.tooltip === 'Verified'));
-
-
-/**
- * Get video author.
- *
- * @param {Object} info
- * @returns {Object}
- */
-exports.getAuthor = info => {
-  let channelId, thumbnails = [], subscriberCount, verified = false;
-  try {
-    let results = info.response.contents.twoColumnWatchNextResults.results.results.contents;
-    let v = results.find(v2 =>
-      v2.videoSecondaryInfoRenderer &&
-      v2.videoSecondaryInfoRenderer.owner &&
-      v2.videoSecondaryInfoRenderer.owner.videoOwnerRenderer);
-    let videoOwnerRenderer = v.videoSecondaryInfoRenderer.owner.videoOwnerRenderer;
-    channelId = videoOwnerRenderer.navigationEndpoint.browseEndpoint.browseId;
-    thumbnails = videoOwnerRenderer.thumbnail.thumbnails.map(thumbnail => {
-      thumbnail.url = new URL(thumbnail.url, BASE_URL).toString();
-      return thumbnail;
-    });
-    subscriberCount = utils.parseAbbreviatedNumber(getText(videoOwnerRenderer.subscriberCountText));
-    verified = isVerified(videoOwnerRenderer.badges);
-  } catch (err) {
-    // Do nothing.
-  }
-  try {
-    let videoDetails = info.player_response.microformat && info.player_response.microformat.playerMicroformatRenderer;
-    let id = (videoDetails && videoDetails.channelId) || channelId || info.player_response.videoDetails.channelId;
-    let author = {
-      id: id,
-      name: videoDetails ? videoDetails.ownerChannelName : info.player_response.videoDetails.author,
-      user: videoDetails ? videoDetails.ownerProfileUrl.split('/').slice(-1)[0] : null,
-      channel_url: `https://www.youtube.com/channel/${id}`,
-      external_channel_url: videoDetails ? `https://www.youtube.com/channel/${videoDetails.externalChannelId}` : '',
-      user_url: videoDetails ? new URL(videoDetails.ownerProfileUrl, BASE_URL).toString() : '',
-      thumbnails,
-      verified,
-      subscriber_count: subscriberCount,
-    };
-    if (thumbnails.length) {
-      utils.deprecate(author, 'avatar', author.thumbnails[0].url, 'author.avatar', 'author.thumbnails[0].url');
-    }
-    return author;
-  } catch (err) {
-    return {};
-  }
-};
-
-const parseRelatedVideo = (details, rvsParams) => {
-  if (!details) return;
-  try {
-    let viewCount = getText(details.viewCountText);
-    let shortViewCount = getText(details.shortViewCountText);
-    let rvsDetails = rvsParams.find(elem => elem.id === details.videoId);
-    if (!/^\d/.test(shortViewCount)) {
-      shortViewCount = (rvsDetails && rvsDetails.short_view_count_text) || '';
-    }
-    viewCount = (/^\d/.test(viewCount) ? viewCount : shortViewCount).split(' ')[0];
-    let browseEndpoint = details.shortBylineText.runs[0].navigationEndpoint.browseEndpoint;
-    let channelId = browseEndpoint.browseId;
-    let name = getText(details.shortBylineText);
-    let user = (browseEndpoint.canonicalBaseUrl || '').split('/').slice(-1)[0];
-    let video = {
-      id: details.videoId,
-      title: getText(details.title),
-      published: getText(details.publishedTimeText),
-      author: {
-        id: channelId,
-        name,
-        user,
-        channel_url: `https://www.youtube.com/channel/${channelId}`,
-        user_url: `https://www.youtube.com/user/${user}`,
-        thumbnails: details.channelThumbnail.thumbnails.map(thumbnail => {
-          thumbnail.url = new URL(thumbnail.url, BASE_URL).toString();
-          return thumbnail;
-        }),
-        verified: isVerified(details.ownerBadges),
-
-        [Symbol.toPrimitive]() {
-          console.warn(`\`relatedVideo.author\` will be removed in a near future release, ` +
-            `use \`relatedVideo.author.name\` instead.`);
-          return video.author.name;
-        },
-
-      },
-      short_view_count_text: shortViewCount.split(' ')[0],
-      view_count: viewCount.replace(/,/g, ''),
-      length_seconds: details.lengthText ?
-        Math.floor(parseTimestamp(getText(details.lengthText)) / 1000) :
-        rvsParams && `${rvsParams.length_seconds}`,
-      thumbnails: details.thumbnail.thumbnails,
-      richThumbnails:
-        details.richThumbnail ?
-          details.richThumbnail.movingThumbnailRenderer.movingThumbnailDetails.thumbnails : [],
-      isLive: !!(details.badges && details.badges.find(b => b.metadataBadgeRenderer.label === 'LIVE NOW')),
-    };
-
-    utils.deprecate(video, 'author_thumbnail', video.author.thumbnails[0].url,
-      'relatedVideo.author_thumbnail', 'relatedVideo.author.thumbnails[0].url');
-    utils.deprecate(video, 'ucid', video.author.id, 'relatedVideo.ucid', 'relatedVideo.author.id');
-    utils.deprecate(video, 'video_thumbnail', video.thumbnails[0].url,
-      'relatedVideo.video_thumbnail', 'relatedVideo.thumbnails[0].url');
-    return video;
-  } catch (err) {
-    // Skip.
-  }
-};
-
-/**
- * Get related videos.
- *
- * @param {Object} info
- * @returns {Array.<Object>}
- */
-exports.getRelatedVideos = info => {
-  let rvsParams = [], secondaryResults = [];
-  try {
-    rvsParams = info.response.webWatchNextResponseExtensionData.relatedVideoArgs.split(',').map(e => qs.parse(e));
-  } catch (err) {
-    // Do nothing.
-  }
-  try {
-    secondaryResults = info.response.contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results;
-  } catch (err) {
-    return [];
-  }
-  let videos = [];
-  for (let result of secondaryResults || []) {
-    let details = result.compactVideoRenderer;
-    if (details) {
-      let video = parseRelatedVideo(details, rvsParams);
-      if (video) videos.push(video);
-    } else {
-      let autoplay = result.compactAutoplayRenderer || result.itemSectionRenderer;
-      if (!autoplay || !Array.isArray(autoplay.contents)) continue;
-      for (let content of autoplay.contents) {
-        let video = parseRelatedVideo(content.compactVideoRenderer, rvsParams);
-        if (video) videos.push(video);
-      }
-    }
-  }
-  return videos;
-};
-
-/**
- * Get like count.
- *
- * @param {Object} info
- * @returns {number}
- */
-exports.getLikes = info => {
-  try {
-    let contents = info.response.contents.twoColumnWatchNextResults.results.results.contents;
-    let video = contents.find(r => r.videoPrimaryInfoRenderer);
-    let buttons = video.videoPrimaryInfoRenderer.videoActions.menuRenderer.topLevelButtons;
-    let like = buttons.find(b => b.toggleButtonRenderer &&
-      b.toggleButtonRenderer.defaultIcon.iconType === 'LIKE');
-    return parseInt(like.toggleButtonRenderer.defaultText.accessibility.accessibilityData.label.replace(/\D+/g, ''));
-  } catch (err) {
-    return null;
-  }
-};
-
-/**
- * Get dislike count.
- *
- * @param {Object} info
- * @returns {number}
- */
-exports.getDislikes = info => {
-  try {
-    let contents = info.response.contents.twoColumnWatchNextResults.results.results.contents;
-    let video = contents.find(r => r.videoPrimaryInfoRenderer);
-    let buttons = video.videoPrimaryInfoRenderer.videoActions.menuRenderer.topLevelButtons;
-    let dislike = buttons.find(b => b.toggleButtonRenderer &&
-      b.toggleButtonRenderer.defaultIcon.iconType === 'DISLIKE');
-    return parseInt(dislike.toggleButtonRenderer.defaultText.accessibility.accessibilityData.label.replace(/\D+/g, ''));
-  } catch (err) {
-    return null;
-  }
-};
-
-/**
- * Cleans up a few fields on `videoDetails`.
- *
- * @param {Object} videoDetails
- * @param {Object} info
- * @returns {Object}
- */
-exports.cleanVideoDetails = (videoDetails, info) => {
-  videoDetails.thumbnails = videoDetails.thumbnail.thumbnails;
-  delete videoDetails.thumbnail;
-  utils.deprecate(videoDetails, 'thumbnail', { thumbnails: videoDetails.thumbnails },
-    'videoDetails.thumbnail.thumbnails', 'videoDetails.thumbnails');
-  videoDetails.description = videoDetails.shortDescription || getText(videoDetails.description);
-  delete videoDetails.shortDescription;
-  utils.deprecate(videoDetails, 'shortDescription', videoDetails.description,
-    'videoDetails.shortDescription', 'videoDetails.description');
-
-  // Use more reliable `lengthSeconds` from `playerMicroformatRenderer`.
-  videoDetails.lengthSeconds =
-    (info.player_response.microformat &&
-    info.player_response.microformat.playerMicroformatRenderer.lengthSeconds) ||
-    info.player_response.videoDetails.lengthSeconds;
-  return videoDetails;
-};
-
-/**
- * Get storyboards info.
- *
- * @param {Object} info
- * @returns {Array.<Object>}
- */
-exports.getStoryboards = info => {
-  const parts = info.player_response.storyboards &&
-    info.player_response.storyboards.playerStoryboardSpecRenderer &&
-    info.player_response.storyboards.playerStoryboardSpecRenderer.spec &&
-    info.player_response.storyboards.playerStoryboardSpecRenderer.spec.split('|');
-
-  if (!parts) return [];
-
-  const url = new URL(parts.shift());
-
-  return parts.map((part, i) => {
-    let [
-      thumbnailWidth,
-      thumbnailHeight,
-      thumbnailCount,
-      columns,
-      rows,
-      interval,
-      nameReplacement,
-      sigh,
-    ] = part.split('#');
-
-    url.searchParams.set('sigh', sigh);
-
-    thumbnailCount = parseInt(thumbnailCount, 10);
-    columns = parseInt(columns, 10);
-    rows = parseInt(rows, 10);
-
-    const storyboardCount = Math.ceil(thumbnailCount / (columns * rows));
-
-    return {
-      templateUrl: url.toString().replace('$L', i).replace('$N', nameReplacement),
-      thumbnailWidth: parseInt(thumbnailWidth, 10),
-      thumbnailHeight: parseInt(thumbnailHeight, 10),
-      thumbnailCount,
-      interval: parseInt(interval, 10),
-      columns,
-      rows,
-      storyboardCount,
-    };
-  });
-};
-
-/**
- * Get chapters info.
- *
- * @param {Object} info
- * @returns {Array.<Object>}
- */
-exports.getChapters = info => {
-  const playerOverlayRenderer = info.response &&
-    info.response.playerOverlays &&
-    info.response.playerOverlays.playerOverlayRenderer;
-  const playerBar = playerOverlayRenderer &&
-    playerOverlayRenderer.decoratedPlayerBarRenderer &&
-    playerOverlayRenderer.decoratedPlayerBarRenderer.decoratedPlayerBarRenderer &&
-    playerOverlayRenderer.decoratedPlayerBarRenderer.decoratedPlayerBarRenderer.playerBar;
-  const markersMap = playerBar &&
-    playerBar.multiMarkersPlayerBarRenderer &&
-    playerBar.multiMarkersPlayerBarRenderer.markersMap;
-  const marker = Array.isArray(markersMap) && markersMap.find(m => m.value && Array.isArray(m.value.chapters));
-  if (!marker) return [];
-  const chapters = marker.value.chapters;
-
-  return chapters.map(chapter => ({
-    title: getText(chapter.chapterRenderer.title),
-    start_time: chapter.chapterRenderer.timeRangeStartMillis / 1000,
-  }));
-};
-
-},{"./utils":72,"m3u8stream":11,"querystring":20}],69:[function(require,module,exports){
-const querystring = require('querystring');
-const sax = require('sax');
-const miniget = require('miniget');
-const utils = require('./utils');
-// Forces Node JS version of setTimeout for Electron based applications
-const { setTimeout } = require('timers');
-const formatUtils = require('./format-utils');
-const urlUtils = require('./url-utils');
-const extras = require('./info-extras');
-const sig = require('./sig');
-const Cache = require('./cache');
-
-
-const BASE_URL = 'https://www.youtube.com/watch?v=';
-
-
-// Cached for storing basic/full info.
-exports.cache = new Cache();
-exports.cookieCache = new Cache(1000 * 60 * 60 * 24);
-exports.watchPageCache = new Cache();
-// Cache for cver used in getVideoInfoPage
-let cver = '2.20210622.10.00';
-
-
-// Special error class used to determine if an error is unrecoverable,
-// as in, ytdl-core should not try again to fetch the video metadata.
-// In this case, the video is usually unavailable in some way.
-class UnrecoverableError extends Error {}
-
-
-// List of URLs that show up in `notice_url` for age restricted videos.
-const AGE_RESTRICTED_URLS = [
-  'support.google.com/youtube/?p=age_restrictions',
-  'youtube.com/t/community_guidelines',
-];
-
-
-/**
- * Gets info from a video without getting additional formats.
- *
- * @param {string} id
- * @param {Object} options
- * @returns {Promise<Object>}
-*/
-exports.getBasicInfo = async(id, options) => {
-  const retryOptions = Object.assign({}, miniget.defaultOptions, options.requestOptions);
-  options.requestOptions = Object.assign({}, options.requestOptions, {});
-  options.requestOptions.headers = Object.assign({},
-    {
-      // eslint-disable-next-line max-len
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.101 Safari/537.36',
-    }, options.requestOptions.headers);
-  const validate = info => {
-    let playErr = utils.playError(info.player_response, ['ERROR'], UnrecoverableError);
-    let privateErr = privateVideoError(info.player_response);
-    if (playErr || privateErr) {
-      throw playErr || privateErr;
-    }
-    return info && info.player_response && (
-      info.player_response.streamingData || isRental(info.player_response) || isNotYetBroadcasted(info.player_response)
-    );
-  };
-  let info = await pipeline([id, options], validate, retryOptions, [
-    getWatchHTMLPage,
-    getWatchJSONPage,
-    getVideoInfoPage,
-  ]);
-
-  Object.assign(info, {
-    formats: parseFormats(info.player_response),
-    related_videos: extras.getRelatedVideos(info),
-  });
-
-  // Add additional properties to info.
-  const media = extras.getMedia(info);
-  const additional = {
-    author: extras.getAuthor(info),
-    media,
-    likes: extras.getLikes(info),
-    dislikes: extras.getDislikes(info),
-    age_restricted: !!(media && media.notice_url && AGE_RESTRICTED_URLS.some(url => media.notice_url.includes(url))),
-
-    // Give the standard link to the video.
-    video_url: BASE_URL + id,
-    storyboards: extras.getStoryboards(info),
-    chapters: extras.getChapters(info),
-  };
-
-  info.videoDetails = extras.cleanVideoDetails(Object.assign({},
-    info.player_response && info.player_response.microformat &&
-    info.player_response.microformat.playerMicroformatRenderer,
-    info.player_response && info.player_response.videoDetails, additional), info);
-
-  return info;
-};
-
-const privateVideoError = player_response => {
-  let playability = player_response && player_response.playabilityStatus;
-  if (playability && playability.status === 'LOGIN_REQUIRED' && playability.messages &&
-    playability.messages.filter(m => /This is a private video/.test(m)).length) {
-    return new UnrecoverableError(playability.reason || (playability.messages && playability.messages[0]));
-  } else {
-    return null;
-  }
-};
-
-
-const isRental = player_response => {
-  let playability = player_response.playabilityStatus;
-  return playability && playability.status === 'UNPLAYABLE' &&
-    playability.errorScreen && playability.errorScreen.playerLegacyDesktopYpcOfferRenderer;
-};
-
-
-const isNotYetBroadcasted = player_response => {
-  let playability = player_response.playabilityStatus;
-  return playability && playability.status === 'LIVE_STREAM_OFFLINE';
-};
-
-
-const getWatchHTMLURL = (id, options) => `${BASE_URL + id}&hl=${options.lang || 'en'}`;
-const getWatchHTMLPageBody = (id, options) => {
-  const url = getWatchHTMLURL(id, options);
-  return exports.watchPageCache.getOrSet(url, () => utils.exposedMiniget(url, options).text());
-};
-
-
-const EMBED_URL = 'https://www.youtube.com/embed/';
-const getEmbedPageBody = (id, options) => {
-  const embedUrl = `${EMBED_URL + id}?hl=${options.lang || 'en'}`;
-  return utils.exposedMiniget(embedUrl, options).text();
-};
-
-
-const getHTML5player = body => {
-  let html5playerRes =
-    /<script\s+src="([^"]+)"(?:\s+type="text\/javascript")?\s+name="player_ias\/base"\s*>|"jsUrl":"([^"]+)"/
-      .exec(body);
-  return html5playerRes ? html5playerRes[1] || html5playerRes[2] : null;
-};
-
-
-const getIdentityToken = (id, options, key, throwIfNotFound) =>
-  exports.cookieCache.getOrSet(key, async() => {
-    let page = await getWatchHTMLPageBody(id, options);
-    let match = page.match(/(["'])ID_TOKEN\1[:,]\s?"([^"]+)"/);
-    if (!match && throwIfNotFound) {
-      throw new UnrecoverableError('Cookie header used in request, but unable to find YouTube identity token');
-    }
-    return match && match[2];
-  });
-
-
-/**
- * Goes through each endpoint in the pipeline, retrying on failure if the error is recoverable.
- * If unable to succeed with one endpoint, moves onto the next one.
- *
- * @param {Array.<Object>} args
- * @param {Function} validate
- * @param {Object} retryOptions
- * @param {Array.<Function>} endpoints
- * @returns {[Object, Object, Object]}
- */
-const pipeline = async(args, validate, retryOptions, endpoints) => {
-  let info;
-  for (let func of endpoints) {
-    try {
-      const newInfo = await retryFunc(func, args.concat([info]), retryOptions);
-      if (newInfo.player_response) {
-        newInfo.player_response.videoDetails = assign(
-          info && info.player_response && info.player_response.videoDetails,
-          newInfo.player_response.videoDetails);
-        newInfo.player_response = assign(info && info.player_response, newInfo.player_response);
-      }
-      info = assign(info, newInfo);
-      if (validate(info, false)) {
-        break;
-      }
-    } catch (err) {
-      if (err instanceof UnrecoverableError || func === endpoints[endpoints.length - 1]) {
-        throw err;
-      }
-      // Unable to find video metadata... so try next endpoint.
-    }
-  }
-  return info;
-};
-
-
-/**
- * Like Object.assign(), but ignores `null` and `undefined` from `source`.
- *
- * @param {Object} target
- * @param {Object} source
- * @returns {Object}
- */
-const assign = (target, source) => {
-  if (!target || !source) { return target || source; }
-  for (let [key, value] of Object.entries(source)) {
-    if (value !== null && value !== undefined) {
-      target[key] = value;
-    }
-  }
-  return target;
-};
-
-
-/**
- * Given a function, calls it with `args` until it's successful,
- * or until it encounters an unrecoverable error.
- * Currently, any error from miniget is considered unrecoverable. Errors such as
- * too many redirects, invalid URL, status code 404, status code 502.
- *
- * @param {Function} func
- * @param {Array.<Object>} args
- * @param {Object} options
- * @param {number} options.maxRetries
- * @param {Object} options.backoff
- * @param {number} options.backoff.inc
- */
-const retryFunc = async(func, args, options) => {
-  let currentTry = 0, result;
-  while (currentTry <= options.maxRetries) {
-    try {
-      result = await func(...args);
-      break;
-    } catch (err) {
-      if (err instanceof UnrecoverableError ||
-        (err instanceof miniget.MinigetError && err.statusCode < 500) || currentTry >= options.maxRetries) {
-        throw err;
-      }
-      let wait = Math.min(++currentTry * options.backoff.inc, options.backoff.max);
-      await new Promise(resolve => setTimeout(resolve, wait));
-    }
-  }
-  return result;
-};
-
-
-const jsonClosingChars = /^[)\]}'\s]+/;
-const parseJSON = (source, varName, json) => {
-  if (!json || typeof json === 'object') {
-    return json;
-  } else {
-    try {
-      json = json.replace(jsonClosingChars, '');
-      return JSON.parse(json);
-    } catch (err) {
-      throw Error(`Error parsing ${varName} in ${source}: ${err.message}`);
-    }
-  }
-};
-
-
-const findJSON = (source, varName, body, left, right, prependJSON) => {
-  let jsonStr = utils.between(body, left, right);
-  if (!jsonStr) {
-    throw Error(`Could not find ${varName} in ${source}`);
-  }
-  return parseJSON(source, varName, utils.cutAfterJSON(`${prependJSON}${jsonStr}`));
-};
-
-
-const findPlayerResponse = (source, info) => {
-  const player_response = info && (
-    (info.args && info.args.player_response) ||
-    info.player_response || info.playerResponse || info.embedded_player_response);
-  return parseJSON(source, 'player_response', player_response);
-};
-
-
-const getWatchJSONURL = (id, options) => `${getWatchHTMLURL(id, options)}&pbj=1`;
-const getWatchJSONPage = async(id, options) => {
-  const reqOptions = Object.assign({ headers: {} }, options.requestOptions);
-  let cookie = reqOptions.headers.Cookie || reqOptions.headers.cookie;
-  reqOptions.headers = Object.assign({
-    'x-youtube-client-name': '1',
-    'x-youtube-client-version': cver,
-    'x-youtube-identity-token': exports.cookieCache.get(cookie || 'browser') || '',
-  }, reqOptions.headers);
-
-  const setIdentityToken = async(key, throwIfNotFound) => {
-    if (reqOptions.headers['x-youtube-identity-token']) { return; }
-    reqOptions.headers['x-youtube-identity-token'] = await getIdentityToken(id, options, key, throwIfNotFound);
-  };
-
-  if (cookie) {
-    await setIdentityToken(cookie, true);
-  }
-
-  const jsonUrl = getWatchJSONURL(id, options);
-  const body = await utils.exposedMiniget(jsonUrl, options, reqOptions).text();
-  let parsedBody = parseJSON('watch.json', 'body', body);
-  if (parsedBody.reload === 'now') {
-    await setIdentityToken('browser', false);
-  }
-  if (parsedBody.reload === 'now' || !Array.isArray(parsedBody)) {
-    throw Error('Unable to retrieve video metadata in watch.json');
-  }
-  let info = parsedBody.reduce((part, curr) => Object.assign(curr, part), {});
-  info.player_response = findPlayerResponse('watch.json', info);
-  info.html5player = info.player && info.player.assets && info.player.assets.js;
-
-  return info;
-};
-
-
-const getWatchHTMLPage = async(id, options) => {
-  let body = await getWatchHTMLPageBody(id, options);
-  let info = { page: 'watch' };
-  try {
-    cver = utils.between(body, '{"key":"cver","value":"', '"}');
-    info.player_response = findJSON('watch.html', 'player_response',
-      body, /\bytInitialPlayerResponse\s*=\s*\{/i, '</script>', '{');
-  } catch (err) {
-    let args = findJSON('watch.html', 'player_response', body, /\bytplayer\.config\s*=\s*{/, '</script>', '{');
-    info.player_response = findPlayerResponse('watch.html', args);
-  }
-  info.response = findJSON('watch.html', 'response', body, /\bytInitialData("\])?\s*=\s*\{/i, '</script>', '{');
-  info.html5player = getHTML5player(body);
-  return info;
-};
-
-
-const INFO_HOST = 'www.youtube.com';
-const INFO_PATH = '/get_video_info';
-const VIDEO_EURL = 'https://youtube.googleapis.com/v/';
-const getVideoInfoPage = async(id, options) => {
-  const url = new URL(`https://${INFO_HOST}${INFO_PATH}`);
-  url.searchParams.set('video_id', id);
-  url.searchParams.set('c', 'TVHTML5');
-  url.searchParams.set('cver', `7${cver.substr(1)}`);
-  url.searchParams.set('eurl', VIDEO_EURL + id);
-  url.searchParams.set('ps', 'default');
-  url.searchParams.set('gl', 'US');
-  url.searchParams.set('hl', options.lang || 'en');
-  url.searchParams.set('html5', '1');
-  const body = await utils.exposedMiniget(url.toString(), options).text();
-  let info = querystring.parse(body);
-  info.player_response = findPlayerResponse('get_video_info', info);
-  return info;
-};
-
-
-/**
- * @param {Object} player_response
- * @returns {Array.<Object>}
- */
-const parseFormats = player_response => {
-  let formats = [];
-  if (player_response && player_response.streamingData) {
-    formats = formats
-      .concat(player_response.streamingData.formats || [])
-      .concat(player_response.streamingData.adaptiveFormats || []);
-  }
-  return formats;
-};
-
-
-/**
- * Gets info from a video additional formats and deciphered URLs.
- *
- * @param {string} id
- * @param {Object} options
- * @returns {Promise<Object>}
- */
-exports.getInfo = async(id, options) => {
-  let info = await exports.getBasicInfo(id, options);
-  const hasManifest =
-    info.player_response && info.player_response.streamingData && (
-      info.player_response.streamingData.dashManifestUrl ||
-      info.player_response.streamingData.hlsManifestUrl
-    );
-  let funcs = [];
-  if (info.formats.length) {
-    info.html5player = info.html5player ||
-      getHTML5player(await getWatchHTMLPageBody(id, options)) || getHTML5player(await getEmbedPageBody(id, options));
-    if (!info.html5player) {
-      throw Error('Unable to find html5player file');
-    }
-    const html5player = new URL(info.html5player, BASE_URL).toString();
-    funcs.push(sig.decipherFormats(info.formats, html5player, options));
-  }
-  if (hasManifest && info.player_response.streamingData.dashManifestUrl) {
-    let url = info.player_response.streamingData.dashManifestUrl;
-    funcs.push(getDashManifest(url, options));
-  }
-  if (hasManifest && info.player_response.streamingData.hlsManifestUrl) {
-    let url = info.player_response.streamingData.hlsManifestUrl;
-    funcs.push(getM3U8(url, options));
-  }
-
-  let results = await Promise.all(funcs);
-  info.formats = Object.values(Object.assign({}, ...results));
-  info.formats = info.formats.map(formatUtils.addFormatMeta);
-  info.formats.sort(formatUtils.sortFormats);
-  info.full = true;
-  return info;
-};
-
-
-/**
- * Gets additional DASH formats.
- *
- * @param {string} url
- * @param {Object} options
- * @returns {Promise<Array.<Object>>}
- */
-const getDashManifest = (url, options) => new Promise((resolve, reject) => {
-  let formats = {};
-  const parser = sax.parser(false);
-  parser.onerror = reject;
-  let adaptationSet;
-  parser.onopentag = node => {
-    if (node.name === 'ADAPTATIONSET') {
-      adaptationSet = node.attributes;
-    } else if (node.name === 'REPRESENTATION') {
-      const itag = parseInt(node.attributes.ID);
-      if (!isNaN(itag)) {
-        formats[url] = Object.assign({
-          itag, url,
-          bitrate: parseInt(node.attributes.BANDWIDTH),
-          mimeType: `${adaptationSet.MIMETYPE}; codecs="${node.attributes.CODECS}"`,
-        }, node.attributes.HEIGHT ? {
-          width: parseInt(node.attributes.WIDTH),
-          height: parseInt(node.attributes.HEIGHT),
-          fps: parseInt(node.attributes.FRAMERATE),
-        } : {
-          audioSampleRate: node.attributes.AUDIOSAMPLINGRATE,
-        });
-      }
-    }
-  };
-  parser.onend = () => { resolve(formats); };
-  const req = utils.exposedMiniget(new URL(url, BASE_URL).toString(), options);
-  req.setEncoding('utf8');
-  req.on('error', reject);
-  req.on('data', chunk => { parser.write(chunk); });
-  req.on('end', parser.close.bind(parser));
-});
-
-
-/**
- * Gets additional formats.
- *
- * @param {string} url
- * @param {Object} options
- * @returns {Promise<Array.<Object>>}
- */
-const getM3U8 = async(url, options) => {
-  url = new URL(url, BASE_URL);
-  const body = await utils.exposedMiniget(url.toString(), options).text();
-  let formats = {};
-  body
-    .split('\n')
-    .filter(line => /^https?:\/\//.test(line))
-    .forEach(line => {
-      const itag = parseInt(line.match(/\/itag\/(\d+)\//)[1]);
-      formats[line] = { itag, url: line };
-    });
-  return formats;
-};
-
-
-// Cache get info functions.
-// In case a user wants to get a video's info before downloading.
-for (let funcName of ['getBasicInfo', 'getInfo']) {
-  /**
-   * @param {string} link
-   * @param {Object} options
-   * @returns {Promise<Object>}
-   */
-  const func = exports[funcName];
-  exports[funcName] = async(link, options = {}) => {
-    utils.checkForUpdates();
-    let id = await urlUtils.getVideoID(link);
-    const key = [funcName, id, options.lang].join('-');
-    return exports.cache.getOrSet(key, () => func(id, options));
-  };
 }
 
+module.exports = Channel;
 
-// Export a few helpers.
-exports.validateID = urlUtils.validateID;
-exports.validateURL = urlUtils.validateURL;
-exports.getURLVideoID = urlUtils.getURLVideoID;
-exports.getVideoID = urlUtils.getVideoID;
-
-},{"./cache":64,"./format-utils":65,"./info-extras":68,"./sig":70,"./url-utils":71,"./utils":72,"miniget":15,"querystring":20,"sax":22,"timers":59}],70:[function(require,module,exports){
-const querystring = require('querystring');
-const Cache = require('./cache');
-const utils = require('./utils');
-
-
-// A shared cache to keep track of html5player.js tokens.
-exports.cache = new Cache();
-
-
-/**
- * Extract signature deciphering tokens from html5player file.
- *
- * @param {string} html5playerfile
- * @param {Object} options
- * @returns {Promise<Array.<string>>}
- */
-exports.getTokens = (html5playerfile, options) => exports.cache.getOrSet(html5playerfile, async() => {
-  const body = await utils.exposedMiniget(html5playerfile, options).text();
-  const tokens = exports.extractActions(body);
-  if (!tokens || !tokens.length) {
-    throw Error('Could not extract signature deciphering actions');
-  }
-  exports.cache.set(html5playerfile, tokens);
-  return tokens;
-});
-
-
-/**
- * Decipher a signature based on action tokens.
- *
- * @param {Array.<string>} tokens
- * @param {string} sig
- * @returns {string}
- */
-exports.decipher = (tokens, sig) => {
-  sig = sig.split('');
-  for (let i = 0, len = tokens.length; i < len; i++) {
-    let token = tokens[i], pos;
-    switch (token[0]) {
-      case 'r':
-        sig = sig.reverse();
-        break;
-      case 'w':
-        pos = ~~token.slice(1);
-        sig = swapHeadAndPosition(sig, pos);
-        break;
-      case 's':
-        pos = ~~token.slice(1);
-        sig = sig.slice(pos);
-        break;
-      case 'p':
-        pos = ~~token.slice(1);
-        sig.splice(0, pos);
-        break;
-    }
-  }
-  return sig.join('');
-};
-
-
-/**
- * Swaps the first element of an array with one of given position.
- *
- * @param {Array.<Object>} arr
- * @param {number} position
- * @returns {Array.<Object>}
- */
-const swapHeadAndPosition = (arr, position) => {
-  const first = arr[0];
-  arr[0] = arr[position % arr.length];
-  arr[position] = first;
-  return arr;
-};
-
-
-const jsVarStr = '[a-zA-Z_\\$][a-zA-Z_0-9]*';
-const jsSingleQuoteStr = `'[^'\\\\]*(:?\\\\[\\s\\S][^'\\\\]*)*'`;
-const jsDoubleQuoteStr = `"[^"\\\\]*(:?\\\\[\\s\\S][^"\\\\]*)*"`;
-const jsQuoteStr = `(?:${jsSingleQuoteStr}|${jsDoubleQuoteStr})`;
-const jsKeyStr = `(?:${jsVarStr}|${jsQuoteStr})`;
-const jsPropStr = `(?:\\.${jsVarStr}|\\[${jsQuoteStr}\\])`;
-const jsEmptyStr = `(?:''|"")`;
-const reverseStr = ':function\\(a\\)\\{' +
-  '(?:return )?a\\.reverse\\(\\)' +
-'\\}';
-const sliceStr = ':function\\(a,b\\)\\{' +
-  'return a\\.slice\\(b\\)' +
-'\\}';
-const spliceStr = ':function\\(a,b\\)\\{' +
-  'a\\.splice\\(0,b\\)' +
-'\\}';
-const swapStr = ':function\\(a,b\\)\\{' +
-  'var c=a\\[0\\];a\\[0\\]=a\\[b(?:%a\\.length)?\\];a\\[b(?:%a\\.length)?\\]=c(?:;return a)?' +
-'\\}';
-const actionsObjRegexp = new RegExp(
-  `var (${jsVarStr})=\\{((?:(?:${
-    jsKeyStr}${reverseStr}|${
-    jsKeyStr}${sliceStr}|${
-    jsKeyStr}${spliceStr}|${
-    jsKeyStr}${swapStr
-  }),?\\r?\\n?)+)\\};`);
-const actionsFuncRegexp = new RegExp(`${`function(?: ${jsVarStr})?\\(a\\)\\{` +
-    `a=a\\.split\\(${jsEmptyStr}\\);\\s*` +
-    `((?:(?:a=)?${jsVarStr}`}${
-  jsPropStr
-}\\(a,\\d+\\);)+)` +
-    `return a\\.join\\(${jsEmptyStr}\\)` +
-  `\\}`);
-const reverseRegexp = new RegExp(`(?:^|,)(${jsKeyStr})${reverseStr}`, 'm');
-const sliceRegexp = new RegExp(`(?:^|,)(${jsKeyStr})${sliceStr}`, 'm');
-const spliceRegexp = new RegExp(`(?:^|,)(${jsKeyStr})${spliceStr}`, 'm');
-const swapRegexp = new RegExp(`(?:^|,)(${jsKeyStr})${swapStr}`, 'm');
-
-
-/**
- * Extracts the actions that should be taken to decipher a signature.
- *
- * This searches for a function that performs string manipulations on
- * the signature. We already know what the 3 possible changes to a signature
- * are in order to decipher it. There is
- *
- * * Reversing the string.
- * * Removing a number of characters from the beginning.
- * * Swapping the first character with another position.
- *
- * Note, `Array#slice()` used to be used instead of `Array#splice()`,
- * it's kept in case we encounter any older html5player files.
- *
- * After retrieving the function that does this, we can see what actions
- * it takes on a signature.
- *
- * @param {string} body
- * @returns {Array.<string>}
- */
-exports.extractActions = body => {
-  const objResult = actionsObjRegexp.exec(body);
-  const funcResult = actionsFuncRegexp.exec(body);
-  if (!objResult || !funcResult) { return null; }
-
-  const obj = objResult[1].replace(/\$/g, '\\$');
-  const objBody = objResult[2].replace(/\$/g, '\\$');
-  const funcBody = funcResult[1].replace(/\$/g, '\\$');
-
-  let result = reverseRegexp.exec(objBody);
-  const reverseKey = result && result[1]
-    .replace(/\$/g, '\\$')
-    .replace(/\$|^'|^"|'$|"$/g, '');
-  result = sliceRegexp.exec(objBody);
-  const sliceKey = result && result[1]
-    .replace(/\$/g, '\\$')
-    .replace(/\$|^'|^"|'$|"$/g, '');
-  result = spliceRegexp.exec(objBody);
-  const spliceKey = result && result[1]
-    .replace(/\$/g, '\\$')
-    .replace(/\$|^'|^"|'$|"$/g, '');
-  result = swapRegexp.exec(objBody);
-  const swapKey = result && result[1]
-    .replace(/\$/g, '\\$')
-    .replace(/\$|^'|^"|'$|"$/g, '');
-
-  const keys = `(${[reverseKey, sliceKey, spliceKey, swapKey].join('|')})`;
-  const myreg = `(?:a=)?${obj
-  }(?:\\.${keys}|\\['${keys}'\\]|\\["${keys}"\\])` +
-    `\\(a,(\\d+)\\)`;
-  const tokenizeRegexp = new RegExp(myreg, 'g');
-  const tokens = [];
-  while ((result = tokenizeRegexp.exec(funcBody)) !== null) {
-    let key = result[1] || result[2] || result[3];
-    switch (key) {
-      case swapKey:
-        tokens.push(`w${result[4]}`);
-        break;
-      case reverseKey:
-        tokens.push('r');
-        break;
-      case sliceKey:
-        tokens.push(`s${result[4]}`);
-        break;
-      case spliceKey:
-        tokens.push(`p${result[4]}`);
-        break;
-    }
-  }
-  return tokens;
-};
-
-
-/**
- * @param {Object} format
- * @param {string} sig
- */
-exports.setDownloadURL = (format, sig) => {
-  let decodedUrl;
-  if (format.url) {
-    decodedUrl = format.url;
-  } else {
-    return;
-  }
-
-  try {
-    decodedUrl = decodeURIComponent(decodedUrl);
-  } catch (err) {
-    return;
-  }
-
-  // Make some adjustments to the final url.
-  const parsedUrl = new URL(decodedUrl);
-
-  // This is needed for a speedier download.
-  // See https://github.com/fent/node-ytdl-core/issues/127
-  parsedUrl.searchParams.set('ratebypass', 'yes');
-
-  if (sig) {
-    // When YouTube provides a `sp` parameter the signature `sig` must go
-    // into the parameter it specifies.
-    // See https://github.com/fent/node-ytdl-core/issues/417
-    parsedUrl.searchParams.set(format.sp || 'signature', sig);
-  }
-
-  format.url = parsedUrl.toString();
-};
-
-
-/**
- * Applies `sig.decipher()` to all format URL's.
- *
- * @param {Array.<Object>} formats
- * @param {string} html5player
- * @param {Object} options
- */
-exports.decipherFormats = async(formats, html5player, options) => {
-  let decipheredFormats = {};
-  let tokens = await exports.getTokens(html5player, options);
-  formats.forEach(format => {
-    let cipher = format.signatureCipher || format.cipher;
-    if (cipher) {
-      Object.assign(format, querystring.parse(cipher));
-      delete format.signatureCipher;
-      delete format.cipher;
-    }
-    const sig = tokens && format.s ? exports.decipher(tokens, format.s) : null;
-    exports.setDownloadURL(format, sig);
-    decipheredFormats[format.url] = format;
-  });
-  return decipheredFormats;
-};
-
-},{"./cache":64,"./utils":72,"querystring":20}],71:[function(require,module,exports){
-/**
- * Get video ID.
- *
- * There are a few type of video URL formats.
- *  - https://www.youtube.com/watch?v=VIDEO_ID
- *  - https://m.youtube.com/watch?v=VIDEO_ID
- *  - https://youtu.be/VIDEO_ID
- *  - https://www.youtube.com/v/VIDEO_ID
- *  - https://www.youtube.com/embed/VIDEO_ID
- *  - https://music.youtube.com/watch?v=VIDEO_ID
- *  - https://gaming.youtube.com/watch?v=VIDEO_ID
- *
- * @param {string} link
- * @return {string}
- * @throws {Error} If unable to find a id
- * @throws {TypeError} If videoid doesn't match specs
- */
-const validQueryDomains = new Set([
-  'youtube.com',
-  'www.youtube.com',
-  'm.youtube.com',
-  'music.youtube.com',
-  'gaming.youtube.com',
-]);
-const validPathDomains = /^https?:\/\/(youtu\.be\/|(www\.)?youtube\.com\/(embed|v|shorts)\/)/;
-exports.getURLVideoID = link => {
-  const parsed = new URL(link);
-  let id = parsed.searchParams.get('v');
-  if (validPathDomains.test(link) && !id) {
-    const paths = parsed.pathname.split('/');
-    id = parsed.host === 'youtu.be' ? paths[1] : paths[2];
-  } else if (parsed.hostname && !validQueryDomains.has(parsed.hostname)) {
-    throw Error('Not a YouTube domain');
-  }
-  if (!id) {
-    throw Error(`No video id found: ${link}`);
-  }
-  id = id.substring(0, 11);
-  if (!exports.validateID(id)) {
-    throw TypeError(`Video id (${id}) does not match expected ` +
-      `format (${idRegex.toString()})`);
-  }
-  return id;
-};
-
-
-/**
- * Gets video ID either from a url or by checking if the given string
- * matches the video ID format.
- *
- * @param {string} str
- * @returns {string}
- * @throws {Error} If unable to find a id
- * @throws {TypeError} If videoid doesn't match specs
- */
-const urlRegex = /^https?:\/\//;
-exports.getVideoID = str => {
-  if (exports.validateID(str)) {
-    return str;
-  } else if (urlRegex.test(str)) {
-    return exports.getURLVideoID(str);
-  } else {
-    throw Error(`No video id found: ${str}`);
-  }
-};
-
-
-/**
- * Returns true if given id satifies YouTube's id format.
- *
- * @param {string} id
- * @return {boolean}
- */
-const idRegex = /^[a-zA-Z0-9-_]{11}$/;
-exports.validateID = id => idRegex.test(id);
-
-
-/**
- * Checks wether the input string includes a valid id.
- *
- * @param {string} string
- * @returns {boolean}
- */
-exports.validateURL = string => {
-  try {
-    exports.getURLVideoID(string);
-    return true;
-  } catch (e) {
-    return false;
-  }
-};
-
-},{}],72:[function(require,module,exports){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./model.js":104,"./playlist":106,"./ut":109,"./video.js":110,"buffer":12}],102:[function(require,module,exports){
 (function (process){(function (){
+// ytcog - innertube library - video download module - run as a fork
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytfomo
+// MIT Licenced
+
+const fs = require('fs');
 const miniget = require('miniget');
+const ut = require('./ut.js')();
+const ffmpeg = require('ffmpeg-static');
 
+// download instance
+let dl;
+// keepalive interval
+let interval;
 
-/**
- * Extract string inbetween another.
- *
- * @param {string} haystack
- * @param {string} left
- * @param {string} right
- * @returns {string}
- */
-exports.between = (haystack, left, right) => {
-  let pos;
-  if (left instanceof RegExp) {
-    const match = haystack.match(left);
-    if (!match) { return ''; }
-    pos = match.index + match[0].length;
-  } else {
-    pos = haystack.indexOf(left);
-    if (pos === -1) { return ''; }
-    pos += left.length;
-  }
-  haystack = haystack.slice(pos);
-  pos = haystack.indexOf(right);
-  if (pos === -1) { return ''; }
-  haystack = haystack.slice(0, pos);
-  return haystack;
-};
+// download object manages a specific download attempt 
+class Download {
 
+    // constructs a download object, requires a data stream object 
+    constructor(data) {
+        this.attempt = 0;
+        this.logging = data.logging;
+        this.cancelled = false;
+        this.timeout = 60000;
+        this.maxSection = 0;
+        this.curSection = 0;
+        this.data = data;
+        this.opts = {
+            headers: {
+                'origin': 'https://www.youtube.com',
+                'referer': 'https://www.youtube.com/',
+                'user-agent': data.agent
+            },
+            maxReconnects: 5,
+            maxRetries: 4,
+            backoff: { inc: 600, max: 12000 },
+            highWaterMark: 1024 * 1024,
+        };
+        this.split = 0;
+        this.elapsed = 0;
+        this.transferred = 0;
+        this.progress = 0;
+        this.type = '';
+        this.aSize = 2; //mb sections
+        this.vSize = 8; //mb sections
+        this.vws = null;
+        this.vrs = null;
+        this.aws = null;
+        this.ars = null;
+        this.tmo = null;
+        this.vfn = this.data.dlpath + '/' + this.data.id + '_video_v' + this.data.vformat + '.' + this.data.stream.container;
+        this.afn = this.data.dlpath + '/' + this.data.id + '_audio_a' + this.data.aformat + '.' + this.data.stream.container;
 
-/**
- * Get a number from an abbreviated number string.
- *
- * @param {string} string
- * @returns {number}
- */
-exports.parseAbbreviatedNumber = string => {
-  const match = string
-    .replace(',', '.')
-    .replace(' ', '')
-    .match(/([\d,.]+)([MK]?)/);
-  if (match) {
-    let [, num, multi] = match;
-    num = parseFloat(num);
-    return Math.round(multi === 'M' ? num * 1000000 :
-      multi === 'K' ? num * 1000 : num);
-  }
-  return null;
-};
-
-
-/**
- * Match begin and end braces of input JSON, return only json
- *
- * @param {string} mixedJson
- * @returns {string}
-*/
-exports.cutAfterJSON = mixedJson => {
-  let open, close;
-  if (mixedJson[0] === '[') {
-    open = '[';
-    close = ']';
-  } else if (mixedJson[0] === '{') {
-    open = '{';
-    close = '}';
-  }
-
-  if (!open) {
-    throw new Error(`Can't cut unsupported JSON (need to begin with [ or { ) but got: ${mixedJson[0]}`);
-  }
-
-  // States if the loop is currently in a string
-  let isString = false;
-
-  // States if the current character is treated as escaped or not
-  let isEscaped = false;
-
-  // Current open brackets to be closed
-  let counter = 0;
-
-  let i;
-  for (i = 0; i < mixedJson.length; i++) {
-    // Toggle the isString boolean when leaving/entering string
-    if (mixedJson[i] === '"' && !isEscaped) {
-      isString = !isString;
-      continue;
+        this.afn = this.data.fn;
+        this.attempt++;
+        switch (this.data.stream.mode) {
+            case 'vonly':
+                this.vdownload();
+                break;
+            case 'aonly':
+                this.adownload();
+                break;
+            default:
+                this.adownload();
+                break;
+        }
     }
 
-    // Toggle the isEscaped boolean for every backslash
-    // Reset for every regular character
-    isEscaped = mixedJson[i] === '\\' && !isEscaped;
-
-    if (isString) continue;
-
-    if (mixedJson[i] === open) {
-      counter++;
-    } else if (mixedJson[i] === close) {
-      counter--;
+    // delete temporary files
+    unlink(msg) {
+        fs.unlink(this.afn, (err) => {
+            fs.unlink(this.vfn, (err) => {
+                this.send(msg);
+            });
+        });
     }
 
-    // All brackets have been closed, thus end of JSON is reached
-    if (counter === 0) {
-      // Return the cut JSON
-      return mixedJson.substr(0, i + 1);
+    // cleanup failed download
+    failed(msg) {
+        if (this.aws !== null) this.aws.destroy();
+        if (this.ars !== null) this.ars.destroy();
+        if (this.vws !== null) this.vws.destroy();
+        if (this.vrs !== null) this.vrs.destroy();
+        this.unlink(msg);
     }
-  }
 
-  // We ran through the whole string and ended up with an unclosed bracket
-  throw Error("Can't cut unsupported JSON (no matching closing bracket found)");
+    // download timed out
+    timedOut() {
+        this.failed({ msg: 'failed', fail: this.type, reason: 'timed out', attempt: this.attempt });
+    }
+
+    // report progress and check cancelled status after each data chunk is received
+    dataChunk(chunk) {
+        clearTimeout(this.tmo);
+        if ((!isNaN(chunk.length)) && (this.data.stream.size)) {
+            if (this.split) {
+                let oldSplit = this.split;
+                this.split = ut.now();
+                this.elapsed += (this.split - oldSplit);
+            } else {
+                this.split = ut.now();
+            }
+            this.transferred += chunk.length;
+            this.progress = 100 * this.transferred / this.data.stream.size;
+            this.send({ msg: 'progress', prg: this.progress, siz: chunk.length });
+        }
+        if (this.cancelled) {
+            this.failed({ msg: 'cancelled', fail: this.type, reason: 'cancelled' });
+        } else {
+            this.tmo = setTimeout(this.timedOut.bind(this), this.timeout);
+        }
+    }
+
+    // process server errors
+    dataError(error) {
+        clearTimeout(this.tmo);
+        this.send({ msg: 'error', err: error });
+        switch (error.statusCode) {
+            case 403:
+            case 404: this.failed({ msg: 'failed', fail: this.type, reason: error.statusCode });
+                break;
+            default: this.tmo = setTimeout(this.timedOut.bind(this), this.timeout);
+                break;
+        }
+    }
+
+    // add metadata and output filename to ffmpeg args
+    ffmpegArgs(args) {
+        this.data.metadata.forEach((m) => {
+            args.push('-metadata');
+            args.push(`${m.field}=${m.value}`);
+        });
+        args.push('-y');
+        args.push(this.data.fn);
+        return args;
+    }
+
+    // check if the audio download is completed
+    dataAudioEnd() {
+        clearTimeout(this.tmo);
+        if (this.curSection >= this.maxSection) {
+            return;
+            if (this.data.stream.mode == 'v&a') {
+                this.vdownload();
+            } else {
+                let output = spawn(
+                    ffmpeg,
+                    this.ffmpegArgs(['-i', this.afn, '-map', '1:a:0', '-acodec', 'copy'])
+                )
+                if (fs.existsSync(this.data.fn)) {
+                    this.unlink({ msg: 'completed' });
+                } else { //ffmpeg failed
+                    fs.rename(this.afn, this.data.fn, (err) => {
+                        this.send({ msg: 'completed' });
+                    });
+                }
+            }
+        } else {
+            this.curSection++;
+            this.nextAudioSection();
+        }
+    }
+
+    // check if the video download is completed, join audio and video if required
+    dataVideoEnd() {
+        clearTimeout(this.tmo);
+        if (this.curSection >= this.maxSection) {
+            return;
+            if (this.data.stream.mode == 'v&a') {
+                let output = spawn(
+                    ffmpeg,
+                    this.ffmpegArgs(['-i', this.vfn, '-i', this.afn, '-map', '0:v:0', '-map', '1:a:0', '-vcodec', 'copy', '-acodec', 'copy'])
+                );
+                if (fs.existsSync(this.data.fn)) {
+                    this.unlink({ msg: 'completed' });
+                } else { //ffmpeg failed
+                    fs.rename(this.afn, this.data.fn + '.audio', (err) => {
+                        fs.rename(this.vfn, this.data.fn + '.video', (err) => {
+                            this.send({ msg: 'completed' });
+                        });
+                    });
+                }
+            } else {
+                let output = spawn(
+                    ffmpeg,
+                    this.ffmpegArgs(['-i', this.vfn, '-map', '0:v:0', '-vcodec', 'copy'])
+                );
+                if (fs.existsSync(this.data.fn)) {
+                    this.unlink({ msg: 'completed' });
+                } else { //ffmpeg failed
+                    fs.rename(this.vfn, this.data.fn, (err) => {
+                        this.send({ msg: 'completed' });
+                    });
+                }
+            }
+        } else {
+            this.curSection++;
+            this.nextVideoSection();
+        }
+    }
+
+    // download the next section of video
+    nextVideoSection() {
+        if (!this.cancelled) {
+            if (this.maxSection) {
+                let start = this.curSection * 1024 * 1024 * this.vSize;
+                if (this.curSection == this.maxSection) {
+                    this.opts.headers['Range'] = `bytes=${start}-`;
+                } else {
+                    let end = start + 1024 * 1024 * this.vSize - 1;
+                    this.opts.headers['Range'] = `bytes=${start}-${end}`;
+                }
+            } else {
+                delete this.opts.headers['Range'];
+            }
+            this.vrs = miniget(this.data.stream.video_url, this.opts);
+            this.vrs.pipe(this.vws, { end: (this.curSection == this.maxSection) });
+            this.vrs.on('data', this.dataChunk.bind(this));
+            this.vrs.on('error', this.dataError.bind(this));
+            this.vrs.on('end', this.dataVideoEnd.bind(this));
+        }
+    }
+
+    // download video, determine number of sections keeping each section <= vSize MB
+    vdownload() {
+        this.type = 'video';
+        let fileStream = streamSaver.createWriteStream(this.vfn);
+        const writer = fileStream.getWriter();
+        writer.on = (a, b) => console.log("on hook", a, b)
+        writer.once = (a, b) => console.log("once hook", a, b)
+        writer.emit = (a, b) => console.log("emiit hook", a, b)
+        writer.end = (a, b) => {
+            console.log("end hook", a, b)
+            writer.close()
+        }
+
+        this.vws = writer;
+        if (this.data.stream.asize == -1) { //combined video/audio stream - do not section
+            this.maxSection = 0;
+        } else {
+            this.maxSection = Math.floor(this.data.stream.vsize / 1024 / 1024 / this.vSize);
+        }
+        this.curSection = 0;
+        this.nextVideoSection();
+    }
+
+    // download the next section of audio
+    nextAudioSection() {
+        if (!this.cancelled) {
+            if (this.maxSection) {
+                let start = this.curSection * 1024 * 1024 * this.aSize;
+                if (this.curSection == this.maxSection) {
+                    this.opts.headers['Range'] = `bytes=${start}-`;
+                } else {
+                    let end = start + 1024 * 1024 * this.aSize - 1;
+                    this.opts.headers['Range'] = `bytes=${start}-${end}`;
+                }
+            } else {
+                delete this.opts.headers['Range'];
+            }
+            this.ars = miniget(this.data.stream.audio_url, this.opts);
+            this.ars.pipe(this.aws, { end: (this.curSection == this.maxSection) });
+            this.ars.on('data', this.dataChunk.bind(this));
+            this.ars.on('error', this.dataError.bind(this));
+            this.ars.on('end', this.dataAudioEnd.bind(this));
+        }
+    }
+
+    // download audio, determine the number of sections keeping each section <= aSize MB
+    adownload() {
+        this.type = 'audio';
+        let fileStream = streamSaver.createWriteStream(this.afn);
+        const writer = fileStream.getWriter();
+        writer.on = (a, b) => console.log("on hook", a, b)
+        writer.once = (a, b) => console.log("once hook", a, b)
+        writer.emit = (a, b) => console.log("emiit hook", a, b)
+        writer.end = (a, b) => {
+            console.log("end hook", a, b)
+            writer.close()
+        }
+
+        this.aws = writer;
+        this.maxSection = Math.floor(this.data.stream.asize / 1024 / 1024 / this.aSize);
+        this.curSection = 0;
+        this.nextAudioSection();
+    }
+
+    // exit the module
+    done() {
+        process.exit(0);
+    }
+
+    // cancel the download
+    cancel() {
+        this.cancelled = true;
+    }
+
+    // send a message to parent process
+    send(msg) {
+        //send(msg);
+    }
+
+    // wait ms milliseconds
+    timewait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // retry the download
+    async retry(ms) {
+        await this.timewait(ms);
+        this.elapsed = 0;
+        this.split = 0;
+        this.progress = 0;
+        this.transferred = 0;
+        this.type = '';
+        this.vws = null;
+        this.vrs = null;
+        this.aws = null;
+        this.ars = null;
+        this.tmo = null;
+        this.attempt++;
+        switch (this.data.stream.mode) {
+            case 'vonly':
+                this.vdownload();
+                break;
+            case 'aonly':
+                this.adownload()
+                break;
+            default:
+                this.adownload()
+                break;
+        }
+    }
+
 };
 
-
-/**
- * Checks if there is a playability error.
- *
- * @param {Object} player_response
- * @param {Array.<string>} statuses
- * @param {Error} ErrorType
- * @returns {!Error}
- */
-exports.playError = (player_response, statuses, ErrorType = Error) => {
-  let playability = player_response && player_response.playabilityStatus;
-  if (playability && statuses.includes(playability.status)) {
-    return new ErrorType(playability.reason || (playability.messages && playability.messages[0]));
-  }
-  return null;
-};
-
-/**
- * Does a miniget request and calls options.requestCallback if present
- *
- * @param {string} url the request url
- * @param {Object} options an object with optional requestOptions and requestCallback parameters
- * @param {Object} requestOptionsOverwrite overwrite of options.requestOptions
- * @returns {miniget.Stream}
- */
-exports.exposedMiniget = (url, options = {}, requestOptionsOverwrite) => {
-  const req = miniget(url, requestOptionsOverwrite || options.requestOptions);
-  if (typeof options.requestCallback === 'function') options.requestCallback(req);
-  return req;
-};
-
-/**
- * Temporary helper to help deprecating a few properties.
- *
- * @param {Object} obj
- * @param {string} prop
- * @param {Object} value
- * @param {string} oldPath
- * @param {string} newPath
- */
-exports.deprecate = (obj, prop, value, oldPath, newPath) => {
-  Object.defineProperty(obj, prop, {
-    get: () => {
-      console.warn(`\`${oldPath}\` will be removed in a near future release, ` +
-        `use \`${newPath}\` instead.`);
-      return value;
-    },
-  });
-};
-
-
-// Check for updates.
-const pkg = require('../package.json');
-const UPDATE_INTERVAL = 1000 * 60 * 60 * 12;
-exports.lastUpdateCheck = 0;
-exports.checkForUpdates = () => {
-  if (!process.env.YTDL_NO_UPDATE && !pkg.version.startsWith('0.0.0-') &&
-    Date.now() - exports.lastUpdateCheck >= UPDATE_INTERVAL) {
-    exports.lastUpdateCheck = Date.now();
-    return miniget('https://api.github.com/repos/fent/node-ytdl-core/releases/latest', {
-      headers: { 'User-Agent': 'ytdl-core' },
-    }).text().then(response => {
-      if (JSON.parse(response).tag_name !== `v${pkg.version}`) {
-        console.warn('\x1b[33mWARNING:\x1B[0m ytdl-core is out of date! Update with "npm install ytdl-core@latest".');
-      }
-    }, err => {
-      console.warn('Error checking for updates:', err.message);
-      console.warn('You can disable this check by setting the `YTDL_NO_UPDATE` env variable.');
-    });
-  }
-  return null;
-};
+module.exports = Download;
 
 }).call(this)}).call(this,require('_process'))
-},{"../package.json":73,"_process":16,"miniget":15}],73:[function(require,module,exports){
-module.exports={
-  "name": "ytdl-core",
-  "description": "YouTube video downloader in pure javascript.",
-  "keywords": [
-    "youtube",
-    "video",
-    "download"
-  ],
-  "version": "4.9.1",
-  "repository": {
-    "type": "git",
-    "url": "git://github.com/fent/node-ytdl-core.git"
-  },
-  "author": "fent <fentbox@gmail.com> (https://github.com/fent)",
-  "contributors": [
-    "Tobias Kutscha (https://github.com/TimeForANinja)",
-    "Andrew Kelley (https://github.com/andrewrk)",
-    "Mauricio Allende (https://github.com/mallendeo)",
-    "Rodrigo Altamirano (https://github.com/raltamirano)",
-    "Jim Buck (https://github.com/JimmyBoh)"
-  ],
-  "main": "./lib/index.js",
-  "types": "./typings/index.d.ts",
-  "files": [
-    "lib",
-    "typings"
-  ],
-  "scripts": {
-    "test": "nyc --reporter=lcov --reporter=text-summary npm run test:unit",
-    "test:unit": "mocha --ignore test/irl-test.js test/*-test.js --timeout 4000",
-    "test:irl": "mocha --timeout 16000 test/irl-test.js",
-    "lint": "eslint ./",
-    "lint:fix": "eslint --fix ./",
-    "lint:typings": "tslint typings/index.d.ts",
-    "lint:typings:fix": "tslint --fix typings/index.d.ts"
-  },
-  "dependencies": {
-    "m3u8stream": "^0.8.3",
-    "miniget": "^4.0.0",
-    "sax": "^1.1.3"
-  },
-  "devDependencies": {
-    "@types/node": "^13.1.0",
-    "assert-diff": "^3.0.1",
-    "dtslint": "^3.6.14",
-    "eslint": "^6.8.0",
-    "mocha": "^7.0.0",
-    "muk-require": "^1.2.0",
-    "nock": "^13.0.4",
-    "nyc": "^15.0.0",
-    "sinon": "^9.0.0",
-    "stream-equal": "~1.1.0",
-    "typescript": "^3.9.7"
-  },
-  "engines": {
-    "node": ">=10"
-  },
-  "license": "MIT"
+},{"./ut.js":109,"_process":48,"ffmpeg-static":18,"fs":11,"miniget":33}],103:[function(require,module,exports){
+// ytcog - innertube library - main module
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const Session = require('./session');
+const Search = require('./search');
+const Channel = require('./channel');
+const Playlist = require('./playlist');
+const Video = require('./video');
+const ut = require('./ut')();
+
+// exclude these fields in the info request
+const exclusions = ['type', 'userAgent', 'status', 'transferred', 'options',
+    'expiry', 'audioStreams', 'videoStreams', 'storyBoards', 'formats', 'cancelled', 'isLive', 'canEmbed', 'debugOn'];
+
+// quick download object - no persistence required
+class Download {
+
+    // constructor requires options {id[,cookie,userAgent,path,filename,container,videoQuality,audioQuality,mediaBitrate]}
+    constructor(options, cookie = '', userAgent = '', debug = false) {
+        this.session = new Session(cookie, userAgent);
+        this.video = null;
+        this.options = options;
+        this.debug = debug;
+    }
+
+    // fetch the media, report the results
+    async fetch() {
+        this.session.debugOn = this.debug;
+        await this.session.fetch();
+        if (this.session.status == 'OK') {
+            this.video = new Video(this.session, this.options);
+            this.video.debugOn = this.debug;
+            await this.video.fetch();
+            if (this.video.status == 'OK') {
+                console.log(ut.jsp(this.video.info(exclusions)));
+                await this.video.download();
+                if (this.video.downloaded) {
+                    console.log('\n\nDone!');
+                    console.log(`Downloaded: ${this.video.fn}`);
+                } else {
+                    console.log(`Video status: ${this.video.status} (${this.video.reason})`);
+                }
+            } else {
+                console.log(`Video status: ${this.video.status} (${this.video.reason})`);
+            }
+        } else {
+            console.log(`Session status: ${this.session.status} (${this.session.reason})`);
+        }
+    }
 }
 
-},{}]},{},[1])(1)
+//encapsulate the object classes
+const ytcog = {
+    Session: Session,
+    Search: Search,
+    Channel: Channel,
+    Playlist: Playlist,
+    Video: Video,
+    Download: Download,
+    dl: async (options, cookie = '', userAgent = '', debug = false) => {
+        let download = new Download(options, cookie, userAgent, debug);
+        await download.fetch();
+    }
+}
+
+module.exports = ytcog;
+
+},{"./channel":101,"./playlist":106,"./search":107,"./session":108,"./ut":109,"./video":110}],104:[function(require,module,exports){
+// ytcog - innertube library - abstract base model object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const miniget = require('miniget');
+const ut = require('./ut')();
+const zlib = require('zlib');
+const sanitize = require("sanitize-filename");
+
+//base model, merge options, https protocols 
+class Model {
+
+	// constructure takes optional cookie andd user agent strings
+	constructor(cookie, userAgent) {
+		this.type = 'model';
+		this.cookie = '';
+		if ((cookie) && (cookie.length)) this.cookie = cookie;
+		this.userAgent = ut.ff();
+		if ((userAgent) && (userAgent.length)) this.userAgent = userAgent;
+		this.status = 'NOK';
+		this.reason = 'No information received';
+		this.common = {
+			hostname: 'www.youtube.com',
+			path: '/',
+			port: 443,
+			headers: {
+				'content-type': 'text/html',
+				'origin': 'https://www.youtube.com',
+				'referer': 'https://www.youtube.com/',
+				'user-agent': this.userAgent,
+			},
+			maxRedirects: 5,
+			maxRetries: 3,
+			maxReconnects: 3,
+			backoff: { inc: 500, max: 10000 },
+		};
+		this.zip = null;
+		this.transferred = 0;
+		this.compress = {
+			gzip: () => { this.zip = zlib.createGunzip(); return this.zip; },
+			deflate: () => { this.zip = zlib.createDeflate(); return this.zip; },
+			br: () => { this.zip = zlib.createBrotliDecompress(); return this.zip; }
+		}
+		this.data = {};
+		this.options = {};
+		this.sapisid = '';
+		if (this.cookie.length) {
+			this.common.headers.cookie = cookie;
+			this.sapisid = ut.pinch(this.cookie, 'SAPISID=', ';', 0, 0, '', false);
+		}
+		this.debugOn = false;
+	}
+
+	// merge options
+	combine(method, options, compress) {
+		let hdrs, opts;
+		(options.headers) ? hdrs = { ...this.common.headers, ...options.headers } : hdrs = this.common.headers;
+		opts = { ...this.common, ...options }
+		opts.method = method;
+		opts.headers = hdrs;
+		if (compress) {
+			opts.acceptEncoding = this.compress;
+			opts.headers['accept-encoding'] = 'gzip, deflate, br';
+		}
+		return opts;
+	}
+
+	// manage post requests to url with options, data and whether to use compression.
+	async httpsPost(url, postOptions, postData, compress) {
+		let body;
+		try {
+			let opts = this.combine('POST', postOptions, compress);
+			let req = miniget(url, opts);
+			let uncompressed = 0;
+			let compressed = 0;
+			req.once('request', (ar) => {
+				ar.write(postData);
+			});
+			req.on('data', (chunk) => {
+				uncompressed += chunk.length;
+			});
+			body = await req.text();
+			if (this.zip !== null) compressed = this.zip.bytesWritten;
+			(compressed) ? this.transferred += compressed : this.transferred += uncompressed;
+			this.status = 'OK';
+			this.reason = '';
+		} catch (e) {
+			this.debug(e);
+			this.status = 'NOK';
+			this.reason = `Post request error. Status Code: ${e.statuscode}`;
+		}
+		return body;
+	}
+
+	// manage get requests to url with options and whether to use compression.
+	async httpsGet(url, getOptions, compress) {
+		let body;
+		try {
+			let uncompressed = 0;
+			let compressed = 0;
+			let opts = this.combine('GET', getOptions, compress);
+			let req = miniget(url, opts);
+			req.on('data', (chunk) => {
+				uncompressed += chunk.length;
+			});
+			body = await req.text();
+			if (this.zip !== null) compressed = this.zip.bytesWritten;
+			(compressed) ? this.transferred += compressed : this.transferred += uncompressed;
+			this.status = 'OK';
+			this.reason = '';
+		} catch (e) {
+			this.debug(e);
+			this.status = 'NOK';
+			this.reason = `Get request error. Status Code: ${e.statuscode}`;
+		}
+		return body;
+	}
+
+	// manage head requests to check status on online resource
+	async httpsHead(url) {
+		try {
+			let headOptions = {
+				method: 'HEAD',
+				headers: {
+					'origin': 'https://www.youtube.com',
+					'referer': 'https://www.youtube.com/',
+					'user-agent': this.userAgent,
+				},
+				maxRedirects: 1,
+				maxRetries: 0,
+				maxReconnects: 3,
+				backoff: { inc: 500, max: 10000 }
+			}
+			await miniget(url, headOptions).text();
+			this.status = 'OK';
+			this.reason = '';
+		} catch (e) {
+			this.debug(e);
+			this.status = 'NOK';
+			this.reason = `Head request error. Status Code: ${e.statusCode}`;
+		}
+	}
+
+	// update options object with new options
+	updateOptions(newOptions) {
+		this.options = { ...this.options, ...newOptions };
+	}
+
+	// return a human readable object of class properties where ignore is an array of property names to ignore
+	info(ignore = []) {
+		let always = ['data', 'session', 'player', 'results', 'videos', 'playlists', 'channels', 'zip', 'common', 'spmap', 'compress', 'more'];
+		let exclude = [...new Set([...always, ...ignore])]
+		try {
+			let props = Object.keys(this);
+			let meta = {};
+			props.forEach((k) => {
+				if (!exclude.includes(k)) {
+					switch (typeof this[k]) {
+						case 'boolean':
+							meta[k] = this[k];
+							break;
+						case 'string':
+							if (this[k].length) {
+								meta[k] = this[k];
+							}
+							break;
+						case 'number':
+							if (this[k] > 0) {
+								if (['published', 'updated', 'downloaded', 'joined', 'profiled', 'latest'].includes(k)) {
+									meta[k] = ut.tsAge(this[k]) + ' ago';
+									if (meta[k] == 'now ago') meta[k] = 'now';
+								} else {
+									meta[k] = this[k];
+								}
+							}
+							break;
+						case 'function': break;
+						case 'object':
+							if ((Array.isArray(this[k])) && (this[k].length)) {
+								meta[k] = this[k];
+							} else if ((this[k]) && (Object.keys(this[k]).length)) {
+								meta[k] = this[k];
+							}
+							break;
+						default:
+							break;
+					}
+				}
+			});
+			return meta;
+		} catch (e) {
+			this.debug(e);
+			return {
+				error: e
+			};
+		}
+	}
+
+	filename(fn) {
+		let s = '';
+		let dol = false;
+		let lev = 0;
+		let inp = fn.split('');
+		let tag = '';
+		let acc = () => {
+			(lev) ? tag += c : s += c;
+			dol = false;
+		}
+		inp.forEach((c) => {
+			switch (c) {
+				case '$':
+					dol = true;
+					break;
+				case '{':
+					if (dol) {
+						lev++;
+						dol = false;
+					} else acc();
+					break;
+				case '}':
+					if (lev) {
+						if (tag.length) {
+							if (['date', 'datetime', 'timestamp'].includes(tag)) {
+								let p = ut.now();
+								if ((this.type == 'video') && (this.published)) p = this.published;
+								s += ut['ts2' + tag](p);
+							} else if (this[tag] !== undefined) {
+								switch (typeof this[tag]) {
+									case 'boolean': s += this[tag].toString(); break;
+									case 'string': s += this[tag]; break;
+									case 'number': s += this[tag].toString(); break;
+									case 'object':
+										if ((Array.isArray(this[tag])) && (this[tag].length) && (typeof this[tag][0] == 'string')) s += this[tag].join(',');
+										break;
+									default:
+										break;
+								}
+							}
+						}
+						lev--;
+						tag = '';
+						dol = false;
+					} else acc();
+					break;
+				default:
+					(lev) ? tag += c : s += c;
+					dol = false;
+					break;
+			}
+		});
+		return sanitize(s);
+	}
+
+	add(item) {
+		let a = this[item.type + 's'];
+		if (!a.find((e) => { return e.id == item.id })) a.push(item);
+	}
+
+	debug(e) {
+		if (this.debugOn) console.log(e);
+	}
+
+}
+
+module.exports = Model;
+
+},{"./ut":109,"miniget":33,"sanitize-filename":54,"zlib":10}],105:[function(require,module,exports){
+// ytcog - innertube library - player object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const querystring = require('querystring');
+const ut = require('./ut')();
+const Model = require('./model');
+
+// player object retrieves player information and extracts functions to transform streams and authorise requests
+class Player extends Model {
+
+    // contructor requires an active session
+    constructor(session) {
+        super(session.cookie, session.userAgent);
+        this.type = 'player';
+        this.session = session;
+        this.decipherFn = (sig) => { return sig };
+        this.ncodeFn = (n) => { return n };
+        this.idhashFn = (id) => { return id };
+    }
+
+    // extract signature manipulations - caller is the section of the player body concerned
+    extractManipulations(caller) {
+        let fname = ut.pinch(caller, 'a=a.split("");', '.', 0, 0, '', false);
+        let ffunc = 'var ' + fname + '={';
+        return ut.block(this.data, ffunc, 1, '{', '}', '{}', false);
+    }
+
+    // extracts signature decipher function
+    extractDecipher() {
+        let fname = ut.pinch(this.data, 'a.set("alr","yes");c&&(c=', '(decodeURIC', 0, 0, '', false);
+        let ffunc = fname + '=function(a)';
+        ffunc = 'var ' + ut.block(this.data, ffunc, 0, '{', '}', '{}', false);
+        ffunc = this.extractManipulations(ffunc) + ';' + ffunc + ';return ' + fname + '(sig);';
+        this.decipherFn = new Function('sig', ffunc);
+    }
+
+    // extracts n parameter encoding function
+    extractNCode() {
+        let fname = ut.pinch(this.data, '&&(b=a.get("n"))&&(b=', '(b)', 0, 0, '', false);
+        let ffunc = fname + '=function(a)';
+        ffunc = 'var ' + ut.block(this.data, ffunc, 0, '{', '}', '{}', false);
+        this.ncodeFn = new Function('ncode', ffunc + '; return ' + fname + '(ncode);');
+    }
+
+    // extracts sapisid authorisation hashing function
+    extractIdHash() {
+        let start = '();b.update(a);return b.';
+        let prefix = ut.pinch(this.data, start, '();', start.length + 6, 0, '', false);
+        let fname = ut.pinch(prefix, '=', '();', 0, 0, '', false);
+        let fname2 = ut.pinch(this.data, start, '()', 0, 0, '', false);
+        let ffunc = fname + '=function()';
+        ffunc = 'var ' + ut.block(this.data, ffunc, 0, '{', '}', '{}', false);
+        this.idhashFn = new Function('sapisid', ffunc + `;
+            var host = "https://www.youtube.com";
+            var ts = Math.floor((new Date).getTime() / 1E3);
+            var encode = ${fname}();
+            encode.update([ts, sapisid, host].join(" "));
+            var hash = encode.${fname2}().toLowerCase();
+            var enjoins = function(a,b,c) {
+                return  [a,[b,c].join("_")].join(" ");
+            };
+            return enjoins('SAPISIDHASH',ts,hash);
+        `);
+    }
+
+    // process the retrieved player 
+    process() {
+        try {
+            this.extractDecipher();
+            this.extractNCode();
+            this.extractIdHash();
+        } catch (e) {
+            this.debug(e);
+            this.status = 'NOK';
+            this.reason = 'Could not extract player functions'
+        }
+    }
+
+    // retrieve the player
+    async fetch() {
+        this.data = await this.httpsGet(
+            'https://www.youtube.com' + this.session.playerUrl,
+            {
+                path: this.session.playerUrl,
+                headers: {
+                    'content-type': 'text/javascript'
+                }
+            },
+            false
+        );
+        if (this.data) {
+            this.process();
+        } else {
+            this.status = 'NOK';
+            this.reason = 'Could not find player'
+        }
+    }
+
+    // deciphers ciphered signatures, returns the transformed url
+    decipher(url) {
+        let args = querystring.parse(url);
+        if (args.s === undefined) return args.url;
+        let sig = this.decipherFn(decodeURIComponent(args.s));
+        let components = new URL(decodeURIComponent(args.url));
+        if (args.sp !== undefined) {
+            components.searchParams.set(args.sp, sig);
+        } else {
+            components.searchParams.set('signature', sig);
+        }
+        return components.toString();
+    }
+
+    // applies ncode to url containing an n parameter, returns the transformed url
+    ncode(url) {
+        let components = new URL(decodeURIComponent(url));
+        let n = components.searchParams.get('n');
+        if (!n) return url;
+        n = this.ncodeFn(n);
+        components.searchParams.set('n', n);
+        return components.toString();
+    }
+
+    //adapts a media stream by applying ncode and decipher functions
+    adapt(stream) {
+        if (stream.decipher) {
+            stream.url = this.ncode(this.decipher(stream.url));
+        } else {
+            stream.url = this.ncode(stream.url);
+        }
+    }
+
+}
+
+module.exports = Player;
+
+},{"./model":104,"./ut":109,"querystring":52}],106:[function(require,module,exports){
+(function (Buffer){(function (){
+// ytcog - innertube library - playlist object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const ut = require('./ut.js')();
+const Model = require('./model.js');
+const Video = require('./video.js');
+
+// playlist object retrieves playlist information and videos from the playlist
+class Playlist extends Model {
+
+	// construct the playlist, requires an active session object and options: {id}
+	constructor(session, options) {
+		super(session.cookie, session.userAgent);
+		this.type = 'playlist';
+		this.session = session;
+		this.quantity = 0;
+		this.views = -1;
+		this.videoCount = -1;
+		this.published = 0;
+		this.compiler = '';
+		this.channelId = '';
+		this.channelThumb = '';
+		this.results = []; // last fetch/continued cycle
+		this.videos = []; // accumulated videos
+		this.updated = 0,
+			this.id = options.id;
+		this.options = {
+			id: options.id,
+			quantity: 100 //maximum number of results
+		}
+		this.title = '';
+		this.thumbnail = '';
+		this.page = 0;
+		this.more = '';
+	}
+
+	// process the retrieved videos, create Video objects
+	process(videos) {
+		let found = [];
+		try {
+			videos.forEach((v, i, a) => {
+				let c = v.continuationItemRenderer;
+				let w = v.playlistVideoRenderer;
+				if ((w) && (w.videoId)) {
+					try {
+						this.quantity++;
+						let video = new Video(this.session, { id: w.videoId });
+						if (w.title) w.title.runs.forEach((e) => { video.title += e.text });
+						video.duration = parseInt(w.lengthSeconds);
+						video.author = w.shortBylineText.runs[0].text;
+						video.channel = w.shortBylineText.runs[0].navigationEndpoint.browseEndpoint.browseId;
+						if (video.channel == this.channelId) {
+							video.channelThumb = this.channelThumb;
+						}
+						found.push(video);
+					} catch (e) { this.debug(e); }
+				} else if (c) {
+					try {
+						this.more = c.continuationEndpoint.continuationCommand.token;
+					} catch (e) { this.debug(e); }
+				}
+			});
+		} catch (e) { this.debug(e); }
+		found.forEach((e) => {
+			this.results.push(e);
+			this.add(e);
+		});
+	}
+
+	// initial fetch request
+	async fetch(options) {
+		if (options) this.updateOptions(options);
+		this.page = 0;
+		this.data = [];
+		this.quantity = 0;
+		this.results = [];
+		let postData = ut.js({
+			context: this.session.context,
+			browseId: 'VL' + this.options.id
+		});
+		let hdrs = {
+			'content-type': 'application/json',
+			'content-length': Buffer.byteLength(postData, 'utf8'),
+			'x-goog-authuser': '0',
+			'x-goog-visitor-id': this.session.context.client.visitorData,
+			'x-youtube-client-name': '1',
+			'x-youtube-client-version': this.session.context.client.clientVersion,
+			'x-origin': 'https://www.youtube.com'
+		};
+		if (this.session.loggedIn) hdrs['authorization'] = this.session.player.idhashFn(this.sapisid);
+		let body = await this.httpsPost(
+			'https://www.youtube.com/youtubei/v1/browse?key=' + this.session.key,
+			{
+				path: '/youtubei/v1/browse?key=' + this.session.key,
+				headers: hdrs
+			},
+			postData,
+			true
+		);
+		if (body) {
+			this.data.push(ut.jp(body));
+			try {
+				let ra = this.data[0].alerts;
+				if ((ra) && (ra.length)) {
+					ra = ra[0].alertRenderer;
+					if (ra) {
+						if (ra.type) this.status = ra.type;
+						let tx = ra.text.runs[0];
+						if (tx.text) this.reason = tx.text;
+					}
+				}
+			} catch (e) { this.debug(e); }
+			if (this.status != 'ERROR') {
+				this.updated = ut.now();
+				try {
+					let md = this.data[0].sidebar.playlistSidebarRenderer.items[0].playlistSidebarPrimaryInfoRenderer;
+					let tn = md.thumbnailRenderer.playlistVideoThumbnailRenderer.thumbnail.thumbnails;
+					if ((tn) && (tn.length)) {
+						tn.forEach((t) => {
+							this.thumbnail = t.url;
+						});
+					}
+					this.title = md.title.runs[0].text;
+					this.videoCount = ut.viewQ(md.stats[0].runs[0].text);
+					this.views = ut.viewQ(md.stats[1].simpleText);
+					let ur = md.stats[2].runs;
+					let s = '';
+					ur.forEach((t) => { s += t.text });
+					if (s.length) this.published = ut.now() - 1000 * ut.ageSec(s);
+				} catch (e) { this.debug(e); }
+				try {
+					let mo = this.data[0].sidebar.playlistSidebarRenderer.items[1].playlistSidebarSecondaryInfoRenderer.videoOwner.videoOwnerRenderer;
+					let th = mo.thumbnail.thumbnails;
+					th.forEach((t) => {
+						this.channelThumb = t.url;
+					});
+					let co = mo.title.runs[0];
+					this.compiler = co.text;
+					this.channelId = co.navigationEndpoint.browseEndpoint.browseId;
+				} catch (e) { this.debug(e); }
+				try {
+					let gi = this.data[0].contents.twoColumnBrowseResultsRenderer.tabs[0].
+						tabRenderer.content.sectionListRenderer.contents[0].
+						itemSectionRenderer.contents[0].playlistVideoListRenderer.contents;
+					this.process(gi);
+					if (this.quantity < this.options.quantity) {
+						await this.continued();
+					} else {
+						this.status = 'OK';
+						this.reason = '';
+					}
+				} catch (e) {
+					this.debug(e);
+					this.status = 'OK';
+					this.reason = '';
+				}
+			}
+		}
+	}
+
+	// continuation if required
+	async continued() {
+		if (!this.more.length) {
+			this.status = 'OK';
+			this.reason = '';
+		} else {
+			let last = this.quantity;
+			let postData = ut.js({
+				context: this.session.context,
+				continuation: this.more
+			});
+			let body = await this.httpsPost(
+				'https://www.youtube.com/youtubei/v1/browse?key=' + this.session.key,
+				{
+					path: '/youtubei/v1/browse?key=' + this.session.key,
+					headers: {
+						'content-type': 'application/json',
+						'content-length': Buffer.byteLength(postData, 'utf8'),
+						'x-goog-visitor-id': this.session.context.client.visitorData,
+					},
+				},
+				postData,
+				true
+			);
+			if (body) {
+				this.page++;
+				this.data.push(ut.jp(body));
+				try {
+					let gi = this.data[this.page].onResponseReceivedActions[0].appendContinuationItemsAction.continuationItems;
+					this.process(gi);
+					if ((this.quantity < this.options.quantity) && (last < this.quantity)) {
+						await this.continued();
+					}
+				} catch (e) {
+					this.debug(e);
+				}
+			}
+		}
+	}
+
+}
+
+module.exports = Playlist;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./model.js":104,"./ut.js":109,"./video.js":110,"buffer":12}],107:[function(require,module,exports){
+(function (Buffer){(function (){
+// ytcog - innertube library - search object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const ut = require('./ut.js')();
+const Model = require('./model.js');
+const Video = require('./video.js');
+const Channel = require('./channel.js');
+const Playlist = require('./playlist.js');
+
+// search object retrieves channel information and videos
+class Search extends Model {
+
+	// construct the channel, requires an active session object and options: {id[,order,quantity]}
+	constructor(session, options) {
+		super(session.cookie, session.userAgent);
+		this.type = 'search';
+		this.session = session;
+		this.quantity = 0; //quanitity collected in last fetch/continued cycle
+		this.latest = 0; //timestamp of latest video 
+		this.results = []; // last fetch/continued cycle
+		this.videos = []; // accumulated videos
+		this.channels = []; // accumulated channels
+		this.playlists = []; // accumulated playlists
+		this.estimated = 0; // estimated results as per yt
+		this.options = {
+			query: 'video', // any search term
+			order: 'relevance', // relevance, age, views, rating
+			period: 'day', // any,hour,day,week,month,year
+			items: 'videos', // any, videos, channels, playlists, movies
+			duration: 'any',	// any, short, medium, long
+			features: '', // can include one or more comma-separated: live, 4k, hd, subtitles, cc, 360, vr180, 3d, hdr, location, purchased
+			quantity: 100	// number of results required
+		}
+		this.updateOptions(options);
+		this.page = 0;
+		this.more = '';
+	}
+
+	// convert options into an innertube search parameter
+	get params() {
+		let d = new Uint8Array(50);
+		let t = 0;
+		let c = 0;
+		if (this.options.order != 'relevance') {
+			d[t] = 0x08; t++;
+			d[t] = ['relevance', 'rating', 'age', 'views'].indexOf(this.options.order); t++;
+		}
+		d[t] = 0x12; t++;
+		c = t; t++;
+		if (this.options.period != 'any') {
+			d[t] = 0x8; t++;
+			d[t] = ['any', 'hour', 'day', 'week', 'month', 'year'].indexOf(this.options.period); t++;
+		}
+		if (this.options.items != 'any') {
+			d[t] = 0x10; t++;
+			d[t] = ['any', 'videos', 'channels', 'playlists', 'movies'].indexOf(this.options.items); t++;
+		}
+		if (this.options.duration != 'any') {
+			d[t] = 0x18; t++;
+			d[t] = ['any', 'short', 'long', 'medium'].indexOf(this.options.duration); t++;
+		}
+		if (this.options.features.length) {
+			let z = this.options.features.split(',');
+			z.forEach((f) => {
+				switch (f.trim()) {
+					case 'live': d[t] = 0x40; t++; break;
+					case '4k': d[t] = 0x70; t++; break;
+					case 'hd': d[t] = 0x20; t++; break;
+					case 'subtitles': d[t] = 0x28; t++; break;
+					case 'cc': d[t] = 0x30; t++; break;
+					case '360': d[t] = 0x78; t++; break;
+					case 'vr180': d[t] = 0xd0; t++; d[t] = 0x01; t++; break;
+					case '3d': d[t] = 0x38; t++; break;
+					case 'hdr': d[t] = 0xc8; t++; d[t] = 0x01; t++; break;
+					case 'location': d[t] = 0xb8; t++; d[t] = 0x01; t++; break;
+					case 'purchased': d[t] = 0x48; t++; break;
+				}
+				d[t] = 0x01;
+				t++;
+			});
+		}
+		d[c] = t - c - 1;
+		let n = Buffer.from(d.slice(0, t));
+		let s = n.toString('base64');
+		return encodeURIComponent(s);
+	}
+
+	// process the retrieved videos, create Video objects
+	process(contents, now) {
+		let found = [];
+		try {
+			contents.forEach((s, i, a) => {
+				let m = s.continuationItemRenderer;
+				let r = s.itemSectionRenderer
+				if (r) {
+					let items = r.contents;
+					items.forEach((item) => {
+						let v = item.videoRenderer;
+						let c = item.channelRenderer;
+						let p = item.playlistRenderer;
+						if ((v) && (v.videoId)) {
+							try {
+								this.quantity++;
+								let ts = 0;
+								if (v.publishedTimeText) {
+									ts = now - 1000 * ut.ageSec(v.publishedTimeText.simpleText);
+								}
+								let video = new Video(this.session, { id: v.videoId, published: ts });
+								if (v.title) v.title.runs.forEach((e) => { video.title += e.text });
+								if ((v.detailedMetadataSnippets) && (v.detailedMetadataSnippets.length)) {
+									let st = v.detailedMetadataSnippets[0].snippetText;
+									if ((st) && (st.runs)) st.runs.forEach((e) => { video.description += e.text });
+								}
+								if (v.lengthText) video.duration = ut.durSec(v.lengthText.simpleText);
+								let vc = v.viewCountText;
+								if (vc) {
+									if (vc.simpleText) {
+										video.views = ut.viewQ(v.viewCountText.simpleText);
+									} else {
+										let r0 = vc.runs[0];
+										if ((r0) && (r0.text !== undefined)) video.views = ut.viewQ(r0.text);
+										let r1 = vc.runs[1];
+										if ((r1) && (r1.text !== undefined) && (r1.text == ' watching')) video.isLive = true;
+									}
+								}
+								let r0 = v.longBylineText.runs[0];
+								if (r0.text) video.author = r0.text;
+								let be = r0.navigationEndpoint.browseEndpoint;
+								if (be.browseId) video.channel = be.browseId;
+								if (v.channelThumbnailSupportedRenderers) {
+									let z = v.channelThumbnailSupportedRenderers.channelThumbnailWithLinkRenderer;
+									if ((z) && (z.thumbnail)) video.channelThumb = z.thumbnail.thumbnails[0].url;
+								}
+								if (ts > this.latest) this.latest = ts;
+								found.push(video);
+							} catch (e) {
+								this.debug(e);
+							}
+						} else if ((c) && (c.channelId)) {
+							try {
+								this.quantity++;
+								let channel = new Channel(this.session, { id: c.channelId });
+								if ((c.title) && (c.title.simpleText)) channel.author = c.title.simpleText;
+								let cd = c.descriptionSnippet
+								if ((cd) && (cd.runs)) cd.runs.forEach((s) => { channel.description += s.text; });
+								let cv = c.videoCountText;
+								if ((cv) && (cv.runs) && (cv.runs.length)) channel.videoCount = ut.viewQ(cv.runs[0].text);
+								let cs = c.subscriberCountText;
+								if ((cs) && (cs.simpleText)) channel.subscribers = ut.viewQ(cs.simpleText);
+								let ct = c.thumbnails;
+								if (ct) {
+									ct.forEach((t) => {
+										if (t.url) channel.thumbnail = t.url;
+									});
+								}
+								found.push(channel);
+							} catch (e) {
+								this.debug(e);
+							}
+						} else if ((p) && (p.playlistId)) {
+							try {
+								this.quantity++;
+								let playlist = new Playlist(this.session, { id: p.playlistId });
+								let pt = p.title;
+								if ((pt) && (pt.simpleText)) playlist.title = pt.simpleText;
+								pt = p.thumbnails;
+								if ((pt) && (pt.length)) {
+									let th = pt[0].thumbnails;
+									if ((th) && (th.length)) {
+										th.forEach((t) => {
+											if (t.url) playlist.thumbnail = t.url;
+										});
+									}
+								}
+								if (p.videoCount) playlist.videoCount = ut.viewQ(p.videoCount);
+								let pl = p.longBylineText;
+								if ((pl) && (pl.runs) && (pl.runs.length)) {
+									if (pl.runs[0].text) playlist.compiler = pl.runs[0].text;
+									let pn = pl.runs[0].navigationEndpoint;
+									if ((pn) && (pn.browseEndpoint)) {
+										let pb = pn.browseEndpoint.browseId;
+										if (pb) playlist.channelId = pb;
+									}
+								}
+								pt = p.publishedTimeText;
+								if ((pt) && (pt.simpleText)) playlist.published = ut.ageSec(pt.simpleText);
+								found.push(playlist);
+							} catch (e) {
+								this.debug(e);
+							}
+						}
+					});
+				} else if (m) {
+					try {
+						this.more = m.continuationEndpoint.continuationCommand.token;
+						if (this.more === undefined) this.more = '';
+					} catch (e) {
+						this.debug(e);
+					}
+				}
+			});
+		} catch (e) {
+			this.debug(e);
+		}
+		found.forEach((e) => {
+			this.results.push(e);
+			this.add(e);
+		});
+	}
+
+	// initial fetch request
+	async fetch(options) {
+		if (options) this.updateOptions(options);
+		this.page = 0;
+		this.data = [];
+		this.quantity = 0;
+		this.results = [];
+		this.estimated = 0;
+		let postData = ut.js({
+			context: this.session.context,
+			params: this.params,
+			query: this.options.query
+		});
+		let hdrs = {
+			'content-type': 'application/json',
+			'content-length': Buffer.byteLength(postData, 'utf8'),
+			'x-goog-authuser': '0',
+			'x-goog-visitor-id': this.session.context.client.visitorData,
+			'x-youtube-client-name': '1',
+			'x-youtube-client-version': this.session.context.client.clientVersion,
+			'x-origin': 'https://www.youtube.com'
+		};
+		if (this.session.loggedIn) hdrs['authorization'] = this.session.player.idhashFn(this.sapisid);
+		let body = await this.httpsPost(
+			'https://www.youtube.com/youtubei/v1/search?key=' + this.session.key,
+			{
+				path: '/youtubei/v1/search?key=' + this.session.key,
+				headers: hdrs
+			},
+			postData,
+			true
+		);
+		if (body) {
+			this.data.push(ut.jp(body));
+			this.updated = ut.now();
+			try {
+				if (this.data[0].estimatedResults) this.estimated = ut.viewQ(this.data[0].estimatedResults);
+				let gi = this.data[0].contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents;
+				this.process(gi, this.updated);
+				if (this.quantity < this.options.quantity) {
+					await this.continued();
+				} else {
+					this.status = 'OK';
+					this.reason = '';
+				}
+			} catch (e) {
+				this.debug(e);
+				this.status = 'OK';
+				this.reason = 'No results';
+			}
+		}
+	}
+
+	// continuation if required
+	async continued() {
+		if ((this.more === undefined) || (!this.more.length)) {
+			this.status = 'OK';
+			this.reason = '';
+		} else {
+			let last = this.quantity;
+			let postData = ut.js({
+				context: this.session.context,
+				continuation: this.more
+			});
+			let body = await this.httpsPost(
+				'https://www.youtube.com/youtubei/v1/search?key=' + this.session.key,
+				{
+					path: '/youtubei/v1/search?key=' + this.session.key,
+					headers: {
+						'content-type': 'application/json',
+						'content-length': Buffer.byteLength(postData, 'utf8'),
+						'x-goog-visitor-id': this.session.context.client.visitorData,
+					},
+				},
+				postData,
+				true
+			);
+			if (body) {
+				this.page++;
+				this.data.push(ut.jp(body));
+				try {
+					let rc = this.data[this.page].onResponseReceivedCommands;
+					if (rc) {
+						let gi = rc[0].appendContinuationItemsAction.continuationItems;
+						this.process(gi, this.updated);
+						if ((this.quantity < this.options.quantity) && (last < this.quantity)) {
+							await this.continued();
+						} else {
+							this.status = 'OK';
+							this.reason = '';
+						}
+					}
+				} catch (e) {
+					this.debug(e);
+					this.status = 'OK';
+					this.reason = '';
+				}
+			}
+		}
+	}
+
+}
+
+module.exports = Search;
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./channel.js":101,"./model.js":104,"./playlist.js":106,"./ut.js":109,"./video.js":110,"buffer":12}],108:[function(require,module,exports){
+// ytcog - innertube library - session object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const ut = require('./ut')();
+const Model = require('./model');
+const Player = require('./player');
+
+// session object retrieves session prerequisites for channel, search and video requests
+class Session extends Model {
+
+	// constructor, accepts optional cookie and user agent strings
+	constructor(cookie, userAgent) {
+		super(cookie, userAgent);
+		this.type = 'session';
+		this.context = {};
+		this.key = '';
+		this.sts = '';
+		this.id_token = '';
+		this.session_token = '';
+		this.visitor_data = '';
+		this.playerUrl = '';
+		this.loggedIn = false;
+		this.player = {};
+	}
+
+	// process the retrieved innertube configuration object
+	async process() {
+		try {
+			let j = this.data;
+			this.context = j.INNERTUBE_CONTEXT;
+			this.key = j.INNERTUBE_API_KEY;
+			this.id_token = j.ID_TOKEN;
+			this.session_token = j.XSRF_TOKEN;
+			this.playerUrl = j.PLAYER_JS_URL;
+			this.sts = j.STS;
+			this.loggedIn = j.LOGGED_IN;
+			if ((j.SBOX_SETTINGS) && (j.SBOX_SETTINGS.VISITOR_DATA) && (this.context) && (this.context.client) && (!this.context.client.visitorData)) {
+				this.context.client.visitorData = j.SBOX_SETTINGS.VISITOR_DATA;
+			}
+			this.context.user = {};
+			//this library always expects json in english, regardless of location.
+			if ((this.context) && (this.context.client)) this.context.client.hl = 'en';
+			this.player = new Player(this);
+			if (this.playerUrl.length) await this.player.fetch();
+			this.status = this.player.status;
+			this.reason = this.player.reason;
+		} catch (e) {
+			this.debug(e);
+			this.status = 'NOK';
+			this.reason = 'Could not load player'
+		}
+	}
+
+	// fetch the yt home page and extract the innertube configuration object
+	async fetch() {
+		try {
+			let result = await this.httpsGet('https://www.youtube.com', {}, true);
+			if (result) {
+				do {
+					this.data = ut.jp(ut.pinch(result, 'ytcfg.set({', '});', 1, 1, '{}', true));
+					if (this.data.INNERTUBE_CONTEXT) {
+						await this.process();
+						result = '';
+					}
+				} while (result.length);
+			}
+			if ((!this.key.length) || (!this.context || !this.context.client || !this.context.client.visitorData)) {
+				this.status = 'NOK';
+				this.reason = 'Session data not found';
+			}
+		} catch (e) { this.debug(e); }
+	}
+
+}
+
+module.exports = Session;
+
+},{"./model":104,"./player":105,"./ut":109}],109:[function(require,module,exports){
+// ytcog - innertube library - utility class - 
+// repository https://github.com/gatecrasher777/ytfomo
+// (c) 2021 gatecrasher777
+// MIT Licence
+
+// utility class provides various useful functions
+class utClass {
+    
+    // stringify js object into json
+    js(o) {
+        try {
+            return JSON.stringify(o);
+        } catch(e) {
+            return "{}";
+        }
+    }
+
+    // parse json into js object 
+    jp(s) {
+        try {
+            return JSON.parse(s);
+        } catch(e) {
+            return this.jp(this.js(s));
+        }
+    }
+
+    // pretty print js object
+    jsp(o) {
+        try {
+            return JSON.stringify(o,null,2);
+        } catch(e) {
+            return "{}";
+        }
+    }
+
+    ts2date(ts) {
+        let dt = new Date(ts);
+        return dt.toISOString().substr(0,10);
+    }
+
+    ts2datetime(ts) {
+        let dt = new Date(ts);
+        let ds = dt.toISOString();
+        return ds.substr(0,10)+' '+ds.substr(11,8)
+    }
+
+    ts2timestamp(ts) {
+        let dt = Math.floor(ts/1000);
+        return dt.toString();
+    }
+
+    // convert a timestamp into an age string
+    tsAge(ts) {
+        if (!ts) return '';
+        let s = Math.floor((Date.now() - ts)/1000);
+        if (s<=0) return 'now'
+        if (s<60) return s+'s';
+        let m = Math.floor(s/60);
+        s = s % 60;
+        if (m<60) return m+'m'+s+'s';
+        let h = Math.floor(m/60);
+        m = m % 60;
+        if (h<24) return h+'h'+m+'m';
+        let d = Math.floor(h/24);
+        h = h % 24;
+        if (d<7) return d+'d'+h+'h';
+        let w = Math.floor(d/7);
+        d = d % 7;
+        if (w<4) return w+'w'+d+'d';
+        let mm = Math.floor(w*12/52.1786);
+        w = Math.floor(w % (52.1786/12));
+        if (mm<12) return mm+'m'+w+'w';
+        let y = Math.floor(mm/12);
+        mm = mm % 12;
+        return y+'y'+mm+'m';
+    }
+    // convert age string into seconds
+    ageSec(a) {
+        if (a.includes('Streamed ')) a = a.substr(9);
+        if (a.includes('Updated ')) a = a.substr(8);
+        if (a.includes('today')) a = "0 days ago";
+        let q = parseInt(a.substr(0,2));
+        if (isNaN(q)) return 0;
+        if (a.includes('second')) return q;
+        if (a.includes('minute')) return 60*q;
+        if (a.includes('hour')) return 60*60*q;
+        if (a.includes('day')) return 24*60*60*q;
+        if (a.includes('week')) return 7*24*60*60*q;
+        if (a.includes('month')) return 52*7*24*60*60*q/12;
+        if (a.includes('year')) return 52*7*24*60*60*q;
+        return 0;
+    }
+
+    dateTS(s) {
+        return Date.parse(s+' 00:00:00 GMT');
+    }
+
+    // condence large quantities into k,m,b or g 
+    qFmt(q,g) {
+        if ((q === undefined) || (q === null)) return 'n/a';
+        if (g===undefined) g='b';
+        const suffix = ['','k','m',g,'t'];
+        let d=1000;
+        if (g=='g') d=1024;
+        let c = 0;
+        do {
+            if (q<0) return 'n/a';
+            if (c) {
+                if (q<10) return q.toFixed(2)+suffix[c];
+                if (q<100) return q.toFixed(1)+suffix[c];
+            }
+            if (q<1000) return q.toFixed(0)+suffix[c];
+            q = q/d;
+            c++;
+        } while (q>0.5);
+    }
+
+    // convert view quantity string into number
+    viewQ(v) {
+        if (v == null) return 0;
+        if (v === undefined) return 0;
+        let s = v.split(' ');
+        let c = 0;
+        s.forEach( (e)=> {
+            let s = e.replace(/,/g, '');
+            let vc = parseFloat(s);
+            if (!isNaN(vc)) { 
+                c = vc;
+                if (e.includes('K')) c=c*1000;
+                if (e.includes('M')) c=c*1000000;
+                if (e.includes('B')) c=c*1000000000;
+            }
+        });
+        return Math.floor(c);
+    }
+    
+    secDur(s, x=':::') {
+        let h = Math.floor(s/3600);
+        let m = Math.floor((s-3600*h)/60);
+        if (x[2]==':') x[2]='';
+        s = s % 60;
+        if (h) return h+x[0]+(100+m).toString().substr(1)+x[1]+(100+s).toString().substr(1)+x[2];
+        if (m) return m+x[1]+(100+s).toString().substr(1)+x[2];
+        return '0'+x[1]+(100+s).toString().substr(1)+x[2];
+    }
+    
+    // convert duration string into seconds
+    durSec(v) {
+        if (v === undefined) return 0;
+        let r = 0;
+        let s = v.split(':');
+        s.forEach((e)=>{
+            r *= 60;
+            r += parseInt(e);
+        });
+        return r;
+    }    
+
+    // current timestamp
+    now() {
+        return Date.now();
+    }
+
+    // default user agent strings if none are supplied
+    ff() {
+        let date = new Date();
+        let version = ((date.getFullYear() - 2018) * 4 + Math.floor(date.getMonth() / 4) + 58) + ".0";
+        return `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${version} Gecko/20100101 Firefox/${version}`;
+    }
+
+    // returns extracted text from body text using start and end text. 
+    // include the last snip characters of start text and the first enip characters of end text
+    // provide what an empty results looks like
+    // optionally truncate the body at the end of the end text.
+    pinch(body,start,end,snip,enip,empty,truncate) {
+		let extract = empty;
+		let spos = body.indexOf(start);
+		let slen = start.length;
+		if (spos>=0) {
+            let next = body.substr(spos+slen-snip);
+			let epos = next.indexOf(end);
+			if (epos>=0) {
+				extract = next.substr(0,epos+enip);
+				if (truncate) body = body.substr(spos+slen-snip+epos+enip);
+			} else {
+				extract = body.substr(spos+slen-snip);
+				if (truncate) body = '';
+			}
+		} else {
+			if (truncate) body = '';
+		}
+		return extract;
+	}
+
+    // iterates through body from start text less snip characters
+    // on an open character it increments level, on a close character it decrements level
+    // it ends when level return to zero.
+    // provide what an empty results looks like
+    // optionally truncate the body at the end of the end text.
+    block(body,start,snip,open,close,empty,truncate) {
+		let extract = empty;
+		let spos = body.indexOf(start);
+		let slen = start.length;
+		if (spos>=0) {
+            let pos = spos+slen-snip;
+            let done = false;
+            let level = 0;
+            extract = start.substr(0,slen-snip);
+            while (!done) {
+                switch (body[pos]) {
+                    case open : 
+                        level++; 
+                        break;
+                    case close : 
+                        level--; 
+                        if (!level) done = true;
+                        break;
+                }
+                extract += body[pos];
+                pos++;
+                if (pos>=body.length) done = true;
+            }
+            if (truncate) body = body.substring(0,pos);
+		} else {
+			if (truncate) body = '';
+		}
+		return extract;
+	}
+
+}
+
+// Initiate the class
+function utInit() {
+	return new utClass;
+}
+// If node, export it
+try {
+	module.exports = utInit;
+} catch (e) {}
+
+// usage in node:  ut = require('pathto/ut')();
+// usage in client side js: ut = utInit();
+},{}],110:[function(require,module,exports){
+(function (Buffer){(function (){
+// ytcog - innertube library - video object class
+// (c) 2021 gatecrasher777
+// https://github.com/gatecrasher777/ytcog
+// MIT Licenced
+
+const ut = require('./ut')();
+const dl = require("./dl")
+const Model = require('./model');
+
+// video object retrieves video information and media, allows smart or direct downloads
+class Video extends Model {
+
+	// construct the video, requires an active session object and 
+	// options: {id[,published,path,filename,container,videoQuality,audioQuality,mediaBitrate]}
+	constructor(session, options) {
+		super(session.cookie, session.userAgent);
+		this.type = 'video';
+		this.session = session;
+		this.id = options.id;
+		this.channelId = '';
+		this.duration = -1;
+		this.expiry = 0;
+		this.views = -1;
+		this.rating = -1;
+		this.updated = 0;
+		this.published = options.published;
+		this.downloaded = 0;
+		this.canEmbed = true;
+		this.isLive = false;
+		this.title = '';
+		this.category = '';
+		this.description = '';
+		this.author = '';
+		this.channelThumb = '';
+		this.country = '';
+		this.fn = '';
+		this.keywords = [];
+		this.storyBoards = [];
+		this.videoStreams = [];
+		this.audioStreams = [];
+		this.videoQuality = '';
+		this.audioCodec = '';
+		this.videoCodec = '';
+		this.formats = [];
+		this.child = null;
+		this.options = {
+			id: options.id,
+			published: 0,
+			path: '',
+			filename: '${author}_${datetime}_${title}_${id}_${videoQuality}_${videoCodec}_${audioCodec}',
+			container: 'mkv',
+			videoQuality: '1080p',
+			audioQuality: 'medium',
+			mediaBitrate: 'highest',
+			videoFormat: -1,
+			audioFormat: -1,
+			metadata: '',
+			progress: (prg, siz) => { }
+		};
+		this.updateOptions(options);
+		this.cancelled = false;
+	}
+
+	// process the retrieved video information, extract media
+	process() {
+		this.updated = ut.now();
+		try {
+			let v = this.data.videoDetails;
+			if (v.isLiveContent) this.isLive = v.isLiveContent;
+			if (v.title) this.title = v.title;
+			if (v.author) this.author = v.author;
+			if (v.channelId) this.channelId = v.channelId;
+			if (v.shortDescription) this.description = v.shortDescription;
+			if (v.averageRating) this.rating = v.averageRating;
+			if (v.viewCount) this.views = parseInt(v.viewCount);
+			if (v.lengthSeconds) this.duration = parseInt(v.lengthSeconds);
+			if (v.keywords) this.keywords = v.keywords;
+		} catch (e) { this.debug(e); }
+		try {
+			let pm = this.data.microformat.playerMicroformatRenderer;
+			if (this.published == 0) {
+				if (pm.publishDate) {
+					let s = pm.publishDate;
+					let p = new Date(parseInt(s.substr(0, 4)), parseInt(s.substr(5, 2)) - 1, parseInt(s.substr(8, 2)), 12);
+					(p.valueOf() > ut.now()) ? this.published = ut.now() : this.published = p.valueOf();
+				}
+			}
+			if (pm.category) this.category = pm.category;
+		} catch (e) { this.debug(e); }
+		let havePreviews = false;
+		try {
+			let p = this.data.playabilityStatus;
+			if (p.playableInEmbed) this.canEmbed = p.playableInEmbed;
+		} catch (e) { this.debug(e); }
+		try {
+			let sb = this.data.storyboards.playerStoryboardSpecRenderer
+			if (sb) {
+				sb = sb.spec;
+				let s = sb.split('|');
+				let url = s.shift();
+				this.storyBoards = [];
+				for (let i = 0; i < s.length; i++) {
+					let ss = s[i].split('');
+					let b = {
+						width: ss[0],
+						height: ss[1],
+						frames: ss[2],
+						perRow: ss[3],
+						perCol: ss[4],
+						timing: ss[5],
+						fn: ss[6],
+						sig: '&sigh=' + ss[7],
+						num: 0,
+						page: []
+					}
+					let nos = 0;
+					while (nos < b.frames) {
+						let f = Math.min(b.perRow * b.perCol, b.frames - nos);
+						let w = b.width * b.perCol;
+						let c = b.perCol;
+						let r = b.perRow;
+						let h = b.height * b.perRow;
+						if (f < b.perCol) {
+							c = f;
+							w = b.width * c;
+						}
+						let nr = f / b.perCol;
+						if (nr < b.perRow) {
+							r = 1 + Math.floor((f - 1) / b.perCol);
+							h = b.height * r;
+						}
+						let p = {
+							link: url.replace('$L', i.toString()).replace('$N', b.fn).replace('$M', (b.num).toString()) + b.sig,
+							frames: f,
+							width: w,
+							height: h,
+							cols: c,
+							rows: r,
+							num: b.num
+						}
+						b.page.push(p);
+						b.num++;
+						nos += b.perRow * b.perCol;
+					}
+					this.storyBoards.push(b);
+					havePreviews = true;
+				}
+			}
+
+		} catch (e) { this.debug(e); }
+		try {
+			let sb = this.data.storyboards.playerLiveStoryboardSpecRenderer;
+			if (sb) {
+				sb = sb.spec;
+				let ss = sb.split('');
+				let url = ss.shift();
+				this.storyBoards = [];
+				let b = {
+					width: ss[0],
+					height: ss[1],
+					perRow: ss[2],
+					perCol: ss[3],
+					frames: -1,
+					timing: 2000,
+					fn: '',
+					sig: '',
+					num: 0,
+					page: []
+				}
+				let f = b.perRow * b.perCol;
+				let w = b.width * b.perCol;
+				let c = b.perCol;
+				let r = b.perRow;
+				let h = b.height * b.perRow;
+				let nr = f / b.perCol;
+				let p = {
+					link: url,
+					frames: f,
+					width: w,
+					height: h,
+					cols: c,
+					rows: r,
+					num: 0
+				}
+				b.page.push(p);
+				this.storyBoards.push(b);
+				havePreviews = true;
+			}
+		} catch (e) { this.debug(e); }
+		if (this.formats.length) {
+			try {
+				let minpub = ut.now();
+				let ds = this.data.streamingData;
+				if (ds.expiresInSeconds) this.expiry = parseInt(ds.expiresInSeconds);
+				this.videoStreams = [];
+				this.audioStreams = [];
+				this.formats.forEach((f, ndx, fmts) => {
+					let lm = Math.floor(parseInt(f.lastModified) / 1000);
+					if ((!isNaN(lm)) && (lm) && (minpub > lm)) minpub = lm;
+					if (f.contentLength === undefined) {
+						f.contentLength = f.bitrate * parseInt(f.approxDurationMs) / 8000;
+					}
+					if (
+						(
+							(!f.url)
+							||
+							(f.url.substr(0, 23) != 'https://manifest.google')
+						)
+						&&
+						(
+							(f.type === undefined)
+							||
+							(f.type != 'FORMAT_STREAM_TYPE_OTF')
+						)
+						&&
+						(f.contentLength)
+						&&
+						(f.bitrate)
+						&&
+						(f.mimeType)
+					) {
+						let stream;
+						if (f.mimeType.includes('video')) {
+							let type = 'video';
+							let container = 'mp4';
+							if (f.mimeType.includes('mp4a') || f.mimeType.includes('opus')) type = 'both';
+							if (f.mimeType.includes('webm')) container = 'webm';
+							if (f.mimeType.includes('3gp')) container = '3gp';
+							if (f.mimeType.includes('flv')) container = 'flv';
+							if (f.mimeType.includes('hls')) container = 'hls';
+							stream = {
+								quality: f.qualityLabel,
+								container: container,
+								bitrate: f.bitrate,
+								size: parseInt(f.contentLength),
+								type: type,
+								url: f.url || f.signatureCipher || f.cipher,
+								decipher: (!f.url)
+							}
+							this.session.player.adapt(stream);
+							this.videoStreams.push(stream);
+							if (type == 'both') {
+								let streamclone = ut.jp(ut.js(stream));
+								streamclone.quality = f.audioQuality,
+									this.audioStreams.push(streamclone);
+							}
+						} else {
+							let container = 'mp4';
+							if (f.mimeType.includes('opus')) container = 'webm';
+							stream = {
+								quality: f.audioQuality,
+								container: container,
+								bitrate: f.bitrate,
+								size: parseInt(f.contentLength),
+								type: 'audio',
+								url: f.url || f.signatureCipher || f.cipher,
+								decipher: (!f.url)
+							}
+							this.session.player.adapt(stream);
+							this.audioStreams.push(stream);
+						}
+					}
+				});
+				this.published = minpub;
+			} catch (e) { this.debug(e); }
+			this.sortStreams();
+		}
+
+	}
+
+	// fetch request
+	async fetch(options) {
+		if (options) this.updateOptions(options);
+		let postData = ut.js({
+			playbackContext: {
+				contentPlaybackContext: {
+					"currentUrl": "/watch?v=" + this.options.id,
+					"vis": 0,
+					"splay": false,
+					"autoCaptionsDefaultOn": false,
+					"autonavState": "STATE_OFF",
+					"html5Preference": "HTML5_PREF_WANTS",
+					"signatureTimestamp": this.session.sts,
+					"referer": "https://www.youtube.com",
+					"lactMilliseconds": "-1"
+				}
+			},
+			context: this.session.context,
+			videoId: this.options.id
+		});
+		let hdrs = {
+			'content-type': 'application/json',
+			'content-length': Buffer.byteLength(postData, 'utf8'),
+			'referer': 'https://www.youtube.com/watch?v=' + this.options.id,
+			'x-goog-authuser': '0',
+			'x-goog-visitor-id': this.session.context.client.visitorData,
+			'x-youtube-client-name': '1',
+			'x-youtube-client-version': this.session.context.client.clientVersion,
+			'x-origin': 'https://www.youtube.com'
+		}
+		if (this.session.loggedIn) hdrs['authorization'] = this.session.player.idhashFn(this.sapisid);
+		let body = await this.httpsPost(
+			'https://www.youtube.com/youtubei/v1/player?key=' + this.session.key,
+			{
+				path: '/youtubei/v1/player?key=' + this.session.key,
+				headers: hdrs
+			},
+			postData,
+			true
+		);
+		if (body) {
+			this.data = ut.jp(body);
+			try {
+				let sts;
+				let sd;
+				sts = this.data.playabilityStatus;
+				if (sts) {
+					this.status = sts.status;
+					if (this.status != 'OK') { // other cases						
+						this.reason = sts.reason;
+						if (this.reason === undefined) {
+							if (sts.messages === undefined) {
+								this.reason = this.status;
+							} else {
+								this.reason = sts.messages[0];
+							}
+						}
+						this.status = 'ERROR';
+					} else {
+						sd = this.data.streamingData;
+						this.formats = [];
+						if (sd.formats) {
+							sd.formats.forEach((e) => {
+								this.formats.push(e);
+							});
+						}
+						if (sd.adaptiveFormats) {
+							sd.adaptiveFormats.forEach((e) => {
+								this.formats.push(e);
+							});
+						}
+						this.reason = '';
+						this.process();
+					}
+				} else {
+					this.item.status = 'ERROR';
+					this.item.meta.reason = 'Cannot get playability status';
+				}
+			} catch (e) { this.debug(e); }
+		}
+	}
+
+	// check online status of the default preview image. Check video.status after call.
+	async imageOnline() {
+		await this.httpsHead('https://i.ytimg.com/vi/' + this.item.id + '/hqdefault.jpg');
+	}
+
+	// whether media has been retrieved
+	get hasMedia() {
+		return ((this.videoStreams.length) || (this.audioStreams.length))
+	}
+
+	// user friendly summary object listing video and audio streams available.
+	get streamInfo() {
+		if (this.hasMedia) {
+			this.sortStreams();
+			let si = {
+				video: {},
+				audio: {}
+			}
+			this.videoStreams.forEach((e, i, a) => {
+				si.video[i] = `${e.quality} ${ut.qFmt(e.bitrate)}bs ${e.container} (${ut.qFmt(e.size, 'g')}b)`;
+				if (e.type == 'both') si.video[i] += ' with audio';
+			});
+			this.audioStreams.forEach((e, i, a) => {
+				si.audio[i] = `${e.quality.replace('AUDIO_QUALITY_', '')} ${ut.qFmt(e.bitrate)}bs ${e.container} (${ut.qFmt(e.size, 'g')}b)`;
+				if (e.type == 'both') si.audio[i] += ' with video';
+			});
+			return si;
+		} else return { error: 'No media available' }
+	}
+
+	// Number of seconds before the streams expire.
+	get timeToExpiry() {
+		if ((this.hasMedia) && (this.updated) && (this.expiry)) {
+			return Math.floor(this.updated / 1000 + this.expiry - ut.now() / 1000);
+		} else {
+			return 0;
+		}
+	}
+
+	// Downloads a specific audio/video combination
+	async downloadInstance(vformat, aformat, vonly, aonly) {
+		try {
+			let vs, as, uc, uq;
+			this.videoQuality = '';
+			this.audioCodec = '';
+			this.videoCodec = '';
+			let data = {
+				id: this.options.id,
+				dlpath: this.options.path,
+				fn: '',
+				aformat: aformat,
+				vformat: vformat,
+				agent: this.userAgent,
+				metadata: []
+			}
+
+			if (vonly && aonly) {
+				return {
+					success: false,
+					fail: 'both'
+				};
+			} else if (vonly) {
+				vs = this.videoStreams[vformat];
+				uc = vs.container;
+				this.videoCodec = (uc == 'webm') ? 'vp9' : 'h264';
+				uq = this.videoQuality = vs.quality;
+				data.stream = {
+					quality: uq,
+					container: uc,
+					video_url: vs.url,
+					audio_url: '',
+					size: vs.size,
+					vsize: vs.size,
+					asize: 0,
+					mode: 'vonly'
+				}
+			} else if (aonly) {
+				as = this.audioStreams[aformat];
+				uc = as.container;
+				this.audioCodec = (uc == 'webm') ? 'opus' : 'aac';
+				uq = as.quality.replace('AUDIO_QUALITY_', '').toLowerCase();
+				data.stream = {
+					quality: uq,
+					container: uc,
+					video_url: '',
+					audio_url: as.url,
+					size: as.size,
+					vsize: 0,
+					asize: as.size,
+					mode: 'aonly'
+				}
+			} else {
+				vs = this.videoStreams[vformat];
+				if (vs.type == 'both') {
+					uc = vs.container;
+					this.videoCodec = (uc == 'webm') ? 'vp9' : 'h264';
+					this.audioCodec = (uc == 'webm') ? 'opus' : 'aac';
+					uq = this.videoQuality = vs.quality;
+					data.stream = {
+						quality: uq,
+						container: uc,
+						video_url: vs.url,
+						audio_url: '',
+						size: vs.size,
+						vsize: vs.size,
+						asize: -1,
+						mode: 'vonly'
+					}
+				} else {
+					as = this.audioStreams[aformat];
+					uc = vs.container;
+					this.videoCodec = (uc == 'webm') ? 'vp9' : 'h264';
+					this.audioCodec = (as.container == 'webm') ? 'opus' : 'aac';
+					if (as.container != vs.container) uc = 'mkv';
+					uq = this.videoQuality = vs.quality;
+					data.stream = {
+						quality: uq,
+						container: uc,
+						video_url: vs.url,
+						audio_url: as.url,
+						size: vs.size + as.size,
+						vsize: vs.size,
+						asize: as.size,
+						mode: 'v&a'
+					}
+				}
+			}
+
+			if (data.stream) {
+				let md = this.options.metadata.split(',');
+				md.forEach((s) => {
+					let z = s.split('=');
+					let f; let v;
+					switch (z[0]) {
+						case 'author':
+							f = (uc == 'mp4') ? 'artist' : 'AUTHOR';
+							v = (z.length > 1) ? z[1] : this.author;
+							break;
+						case 'title':
+							f = (uc == 'mp4') ? 'title' : 'TITLE';
+							v = (z.length > 1) ? z[1] : this.title;
+							break;
+						case 'description':
+							f = (uc == 'mp4') ? 'description' : 'DESCRIPTION';
+							v = (z.length > 1) ? z[1] : this.description;
+							break;
+						case 'keywords':
+							f = (uc == 'mp4') ? 'synopsis' : 'KEYWORDS';
+							v = (z.length > 1) ? z[1] : this.keywords.join(',');
+							break;
+						case 'published':
+							f = (uc == 'mp4') ? 'date' : 'DATE';
+							v = (z.length > 1) ? z[1] : ut.ts2date(this.published);
+							break;
+						default:
+							f = (uc == 'mp4') ? z[0] : z[0].toUpperCase();
+							v = (z.length > 1) ? z[1] : 'none';
+							break;
+					}
+					data.metadata.push({ field: f, value: v });
+				});
+				// data.fn = this.options.path + '/' + this.filename(this.options.filename) + '.' + uc;
+				data.fn = this.filename(this.options.filename) + '.' + uc;
+				let downloadFork = new Promise((resolve, reject) => {
+					let download = new dl(data);
+
+					resolve()
+				});
+
+				return await downloadFork.then(
+					(result) => {
+						return result;
+					}
+				).catch(
+					(error) => {
+						this.debug(error);
+						return {
+							success: false,
+							fail: 'both',
+							reason: error
+						}
+					}
+				);
+
+			} else {
+				return {
+					success: false,
+					fail: 'both',
+					reason: 'invalid data stream'
+				}
+			}
+		} catch (e) {
+			this.debug(e);
+			return {
+				success: false,
+				fail: 'both',
+				reason: e
+			}
+		}
+	}
+
+	// Initiates a download instance
+	async trydl(dl, vonly, aonly) {
+		try {
+			let okay = false;
+			let vs = this.videoStreams;
+			let as = this.audioStreams;
+			if ((vonly) && (dl.v < vs.length)) okay = true;
+			if ((aonly) && (dl.a < as.length)) okay = true;
+			if ((!vonly) && (!aonly) && (dl.v < vs.length)) {
+				if (vs[dl.v].type == 'both') okay = true;
+				if (dl.a < as.length) {
+					if (vs[dl.v].container == as[dl.a].container) okay = true;
+					if (this.options.container == 'mkv') okay = true;
+				}
+			}
+			let pprg = -1;
+			if ((okay) && (!this.cancelled)) {
+				let result = await this.downloadInstance(
+					dl.v,
+					dl.a,
+					vonly,
+					aonly
+				);
+				if (result.success) {
+					this.fn = result.fn;
+					this.downloaded = ut.now();
+					this.options.progress(100, 0);
+					return true;
+				} else {
+					if (result.fail == 'audio') {
+						return await dl.achk();
+					} else if (result.fail == 'video') {
+						return await dl.vchk();
+					} else {
+						this.reason = result.reason;
+						return false;
+					}
+				}
+			} else {
+				return await dl.achk();
+			}
+		} catch (e) { this.debug(e); }
+	}
+
+	// video sort algorithm
+	vsort = (a, b) => {
+		switch (this.options.videoQuality) {
+			case 'highest':
+				if (parseInt(a.quality) > parseInt(b.quality)) return -1;
+				if (parseInt(a.quality) < parseInt(b.quality)) return 1;
+				break;
+			case 'medium': {
+				let wp = Math.sqrt(420);
+				let ap = Math.sqrt(parseInt(a.quality));
+				let bp = Math.sqrt(parseInt(b.quality));
+				if (((ap - wp) ** 2) < ((bp - wp) ** 2)) return -1;
+				if (((ap - wp) ** 2) > ((bp - wp) ** 2)) return 1;
+			}
+				break;
+			case 'none':
+			case 'lowest':
+				if (parseInt(a.quality) < parseInt(b.quality)) return -1;
+				if (parseInt(a.quality) > parseInt(b.quality)) return 1;
+				break;
+			default: {
+				if ((a.quality == this.options.videoQuality) && (b.quality != this.options.videoQuality)) return -1;
+				if ((a.quality != this.options.videoQuality) && (b.quality == this.options.videoQuality)) return 1;
+				let wp = Math.sqrt(parseInt(this.options.videoQuality));
+				let ap = Math.sqrt(parseInt(a.quality));
+				let bp = Math.sqrt(parseInt(b.quality));
+				if (((ap - wp) ** 2) < ((bp - wp) ** 2)) return -1;
+				if (((ap - wp) ** 2) > ((bp - wp) ** 2)) return 1;
+			}
+				break;
+		}
+		if ((a.container == this.options.container) && (b.container != this.options.container)) return -1;
+		if ((a.container != this.options.container) && (b.container == this.options.container)) return 1;
+		if ((this.options.mediaBitrate == 'highest') && (a.bitrate > b.bitrate)) return -1;
+		if ((this.options.mediaBitrate == 'highest') && (a.bitrate < b.bitrate)) return 1;
+		if ((this.options.mediaBitrate == 'lowest') && (a.bitrate < b.bitrate)) return -1;
+		if ((this.options.mediaBitrate == 'lowest') && (a.bitrate > b.bitrate)) return 1;
+		return 0;
+	}
+
+	// audio sort algorithm
+	asort(a, b) {
+		switch (this.options.audioQuality) {
+			case 'highest':
+				if ((a.quality == 'AUDIO_QUALITY_HIGH') && (b.quality != 'AUDIO_QUALITY_HIGH')) return -1;
+				if ((a.quality != 'AUDIO_QUALITY_HIGH') && (b.quality == 'AUDIO_QUALITY_HIGH')) return 1;
+				if ((a.quality == 'AUDIO_QUALITY_MEDIUM') && (b.quality == 'AUDIO_QUALITY_LOW')) return -1;
+				if ((a.quality == 'AUDIO_QUALITY_LOW') && (b.quality != 'AUDIO_QUALITY_LOW')) return 1;
+				break;
+			case 'none':
+			case 'medium':
+				if ((a.quality == 'AUDIO_QUALITY_MEDIUM') && (b.quality != 'AUDIO_QUALITY_MEDIUM')) return -1;
+				if ((a.quality != 'AUDIO_QUALITY_MEDIUM') && (b.quality == 'AUDIO_QUALITY_MEDIUM')) return 1;
+				break;
+			default:
+				if ((a.quality == 'AUDIO_QUALITY_LOW') && (b.quality != 'AUDIO_QUALITY_LOW')) return -1;
+				if ((a.quality != 'AUDIO_QUALITY_LOW') && (b.quality == 'AUDIO_QUALITY_LOW')) return 1;
+				if ((a.quality == 'AUDIO_QUALITY_MEDIUM') && (b.quality == 'AUDIO_QUALITY_HIGH')) return -1;
+				if ((a.quality == 'AUDIO_QUALITY_HIGH') && (b.quality != 'AUDIO_QUALITY_HIGH')) return 1;
+				break;
+		}
+		if ((a.type != 'both') && (b.type == 'both')) return -1;
+		if ((a.type == 'both') && (b.type != 'both')) return 1;
+		if ((a.container == this.options.container) && (b.container != this.options.container)) return -1;
+		if ((a.container != this.options.container) && (b.container == this.options.container)) return 1;
+		if ((this.options.mediaBitrate == 'highest') && (a.bitrate > b.bitrate)) return -1;
+		if ((this.options.mediaBitrate == 'highest') && (a.bitrate < b.bitrate)) return 1;
+		if ((this.options.mediaBitrate == 'lowest') && (a.bitrate < b.bitrate)) return -1;
+		if ((this.options.mediaBitrate == 'lowest') && (a.bitrate > b.bitrate)) return 1;
+		return 0;
+	}
+
+	// sort media streams based on user preferences.
+	sortStreams() {
+		this.videoStreams.sort(this.vsort.bind(this));
+		this.audioStreams.sort(this.asort.bind(this));
+	}
+
+	// sorts media dn downloads based on preferences, 
+	// falls back to less prefered streams if preferred streams fail, unless unique streams are specified 
+	async downloadAttempt(vonly, aonly, vformat, aformat) {
+
+		this.sortStreams();
+
+		let dl = {
+			v: 0,
+			a: 0,
+			mv: this.videoStreams.length,
+			ma: this.audioStreams.length,
+		}
+
+		if (vformat >= 0) {
+			dl.v = parseInt(vformat);
+			if (aonly) dl.v = 0;
+		}
+
+		if (aformat >= 0) {
+			dl.a = parseInt(aformat);
+			if (vonly) dl.a = 0;
+		}
+
+		if ((dl.mv) || (dl.ma)) {
+
+			dl.vchk = async () => {
+				if (vformat >= 0) {
+					return false;
+				} else {
+					dl.v++;
+					dl.a = 0;
+					if (dl.v >= dl.mv) {
+						this.status = 'NOK';
+						this.reason = 'all video streams are exhausted, download failed'
+						return false;
+					} else {
+						return await this.trydl(dl, vonly, aonly);
+					}
+				}
+			}
+
+			dl.achk = async () => {
+				if (aformat >= 0) {
+					return await dl.vchk();
+				} else {
+					dl.a++;
+					if (dl.a >= dl.ma) {
+						return await dl.vchk();
+					} else {
+						return await this.trydl(dl, vonly, aonly);
+					}
+				}
+			}
+
+			let result = await this.trydl(dl, vonly, aonly);
+			return result;
+		} else {
+			this.status = 'NOK';
+			this.reason = 'No video or audio streams, download failed'
+			return false;
+		}
+	}
+
+	// download wrapper
+	async dl(vformat, aformat) {
+		try {
+			let vonly = false;
+			if (aformat >= 0) {
+				if (aformat >= this.audioStreams.length) {
+					vonly = true;
+					aformat = -1;
+				}
+			}
+			if (this.options.audioQuality == 'none') vonly = true;
+			let aonly = false;
+			if (vformat >= 0) {
+				if (vformat >= this.videoStreams.length) {
+					aonly = true;
+					vformat = -1;
+				}
+			}
+			if (this.options.videoQuality == 'none') aonly = true;
+			let success = await this.downloadAttempt(vonly, aonly, vformat, aformat);
+			if (success) {
+				this.downloaded = ut.now();
+			} else {
+				if (!this.cancelled) {
+					//try video onloy
+					if ((aformat >= 0) && (!vonly) && (!aonly) && ((vformat >= 0) || (aformat >= 0))) {
+						success = await this.downloadAttempt(true, false, vformat, aformat);
+						if (success) this.downloaded = ut.now();
+					}
+				}
+			}
+		} catch (e) { this.debug(e); }
+	}
+
+	// download request based on an optional options object. Checked downloaded, current timestamp if successful, 0 if failed.
+	async download(options = {}) {
+		this.downloaded = 0;
+		this.options = { ...this.options, ...options }
+		if (this.hasMedia) await this.dl(this.options.videoFormat, this.options.audioFormat);
+	}
+
+	// cancel the current download
+	cancel() {
+		if ((!this.cancelled) && (!this.downloaded)) {
+			this.cancelled = true;
+			if (this.child !== null) this.child.send({ msg: 'cancel' });
+		}
+	}
+
+}
+
+module.exports = Video;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./dl":102,"./model":104,"./ut":109,"buffer":12}]},{},[1])(1)
 });
