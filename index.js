@@ -1,5 +1,3 @@
-const browserify = require("browserify");
-
 function downloadByteArray(bytes, outputFilename) {
     var a = window.document.createElement('a');
     a.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
