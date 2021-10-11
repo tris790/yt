@@ -2,6 +2,7 @@ const ytdl = require('ytdl-core');
 var Stream = require('stream');
 const streamSaver = require('streamsaver')
 
+let fileStream;
 const { fetch: origFetch } = global;
 const PROXY_URL = "https://proxy.tris790.workers.dev/"
 global.fetch = async (...args) => {
@@ -10,7 +11,7 @@ global.fetch = async (...args) => {
     console.log("Proxying:", newArgs[0]);
     return await origFetch(...newArgs);
 };
-let fileStream;
+
 async function download(url, options) {
     const videoTitle = (await ytdl.getInfo(url))?.videoDetails?.title;
     let filename = "download." + (options.audioOnly === true ? "mp3" : "mp4");
